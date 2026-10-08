@@ -81,6 +81,19 @@ class TextChunker:
         self.separators = separators or self.DEFAULT_SEPARATORS
         self.min_chunk_size = min_chunk_size
 
+    @property
+    def _body_size(self) -> int:
+        """正文容量 = chunk_size - overlap。
+
+        非 fixed 策略的重叠是在正文之后由 _add_overlap 追加的，若正文按
+        chunk_size 累积，最终长度会变成 chunk_size + overlap。这里提前留出余量，
+        使 chunk_size 成为真正的上界。
+        fixed 策略靠 step 自己实现重叠，不用这个值。
+        """
+        if self.overlap <= 0:
+            return self.chunk_size
+        return max(self.chunk_size - self.overlap, 1)
+
     def split(
         self,
         text: str,
@@ -195,13 +208,13 @@ class TextChunker:
                 part_with_sep = part if not buf else sep + part
                 part_len = len(part_with_sep)
 
-                if buf_len + part_len <= self.chunk_size:
+                if buf_len + part_len <= self._body_size:
                     buf.append(part)
                     buf_len += part_len
                 else:
                     # 当前 buf 已满，保存
                     if buf:
-                        merged = sep.join(buf) if i > 0 else "".join(buf)
+                        merged = sep.join(buf)
                         chunks.append(Chunk(
                             text=merged,
                             metadata={**meta, "chunk_method": f"recursive_{seps[0]}"},
@@ -213,7 +226,7 @@ class TextChunker:
                         chunk_idx += 1
 
                     # 处理新部分：若仍超长，递归下一级
-                    if len(part) > self.chunk_size:
+                    if len(part) > self._body_size:
                         sub_chunks = self._recursive_split(
                             part, seps[i + 1:], meta, current_offset
                         )
@@ -231,7 +244,7 @@ class TextChunker:
 
             # 收尾
             if buf:
-                merged = sep.join(buf) if i > 0 else "".join(buf)
+                merged = sep.join(buf)
                 chunks.append(Chunk(
                     text=merged,
                     metadata={**meta, "chunk_method": f"recursive_{seps[0]}"},
@@ -261,7 +274,7 @@ class TextChunker:
         current_offset = 0
 
         for sent in sentences:
-            if buf_len + len(sent) <= self.chunk_size:
+            if buf_len + len(sent) <= self._body_size:
                 buf.append(sent)
                 buf_len += len(sent)
             else:
@@ -280,8 +293,8 @@ class TextChunker:
                     buf_len = 0
 
                 # 单句超长：退化为 recursive
-                if len(sent) > self.chunk_size:
-                    sub = self._split_recursive(sent, self.separators, meta, current_offset)
+                if len(sent) > self._body_size:
+                    sub = self._recursive_split(sent, self.separators, meta, current_offset)
                     for sc in sub:
                         sc.chunk_index = chunk_idx
                         chunk_idx += 1
@@ -326,7 +339,7 @@ class TextChunker:
                 sec_meta["heading_level"] = level
                 sec_meta["heading"] = title
 
-            if len(section) <= self.chunk_size:
+            if len(section) <= self._body_size:
                 chunks.append(Chunk(
                     text=section,
                     metadata={**sec_meta, "chunk_method": "markdown"},
@@ -336,8 +349,10 @@ class TextChunker:
                 ))
                 chunk_idx += 1
             else:
-                # 过长则递归拆分，但保留标题元信息
-                sub_chunks = self._split_recursive(section, sec_meta)
+                # 过长则递归拆分，但保留标题元信息；offset 从本节起点续算
+                sub_chunks = self._recursive_split(
+                    section, self.separators, sec_meta, current_offset
+                )
                 for sc in sub_chunks:
                     sc.metadata.setdefault("heading", sec_meta.get("heading", ""))
                     sc.metadata.setdefault("chunk_method", "markdown_recursive")
@@ -351,7 +366,7 @@ class TextChunker:
 
     def _split_sections(self, text: str, meta: dict) -> List[Chunk]:
         """将输入文本当作一个 section 处理"""
-        if len(text) <= self.chunk_size:
+        if len(text) <= self._body_size:
             return [Chunk(
                 text=text,
                 metadata={**meta, "chunk_method": "section"},
@@ -359,7 +374,7 @@ class TextChunker:
                 char_start=0,
                 char_end=len(text),
             )]
-        return self._split_recursive(text, self.separators, meta, 0)
+        return self._recursive_split(text, self.separators, meta, 0)
 
     # ── 后处理 ───────────────────────────────────────────
 
@@ -367,24 +382,33 @@ class TextChunker:
         """合并过小 chunk + 添加 overlap"""
         chunks = self._merge_small(chunks)
         chunks = [c for c in chunks if c.text.strip()]
-        if self.overlap > 0 and len(chunks) > 1:
+        # overlap >= chunk_size 是无意义配置（会把每个 chunk 撑成近两倍），忽略
+        if 0 < self.overlap < self.chunk_size and len(chunks) > 1:
             chunks = self._add_overlap(chunks)
         return chunks
 
     def _merge_small(self, chunks: List[Chunk]) -> List[Chunk]:
-        """合并过小的 chunk 到前一个"""
+        """合并过小的 chunk 到前一个。
+
+        仅在不突破 chunk_size 的前提下合并：chunk_size 是喂给嵌入模型的上界，
+        宁可末尾留一个偏小的 chunk，也不要超长被模型截断。
+        """
         if not chunks:
             return chunks
 
+        # min_chunk_size >= 正文容量时不可能合并，收敛之避免死条件
+        min_size = min(self.min_chunk_size, self._body_size)
+
         merged = []
         for c in chunks:
-            if len(c.text) < self.min_chunk_size and merged:
-                # 合并到前一个
+            if len(c.text) < min_size and merged:
                 prev = merged[-1]
-                prev.text = prev.text + " " + c.text
-                prev.char_end = c.char_end
-            else:
-                merged.append(c)
+                # 合并后仍须留出 overlap 余量，否则后续 _add_overlap 会突破 chunk_size
+                if len(prev.text) + 1 + len(c.text) <= self._body_size:
+                    prev.text = prev.text + " " + c.text
+                    prev.char_end = c.char_end
+                    continue
+            merged.append(c)
 
         return merged
 

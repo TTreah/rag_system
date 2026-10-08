@@ -208,20 +208,42 @@ def _print_raw_result(data: dict, mode: str):
     print()
 
 
-def _parse_args(argv):
-    """从命令行参数里解析 query、--mode xxx、--raw，返回 (query_str, mode, raw)。"""
-    raw = "--raw" in argv
-    argv = [a for a in argv if a != "--raw"]
+VALID_MODES = ("mix", "local", "global", "naive", "hybrid")
 
-    if "--mode" in argv:
-        idx = argv.index("--mode")
-        mode = argv[idx + 1] if idx + 1 < len(argv) else None
-        rest = argv[:idx]
-        query = " ".join(rest) if rest else None
-        return query, mode, raw
-    # 无 --mode：全部参数作为 query
-    query = " ".join(argv) if argv else None
-    return query, None, raw
+
+def _parse_args(argv):
+    """解析 query / --mode <mode> / --raw，返回 (query, mode, raw)。
+
+    与参数顺序无关：`--mode local "查询"` 与 `"查询" --mode local` 等价。
+    旧实现取 argv[:idx] 作为 query，导致 --mode 写在前面时 query 被静默丢弃、
+    直接掉进交互模式。
+    """
+    raw = "--raw" in argv
+    mode = None
+    rest = []
+
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--raw":
+            i += 1
+        elif arg == "--mode":
+            if i + 1 >= len(argv) or argv[i + 1].startswith("--"):
+                raise SystemExit(f"--mode 缺少取值，可选: {', '.join(VALID_MODES)}")
+            mode = argv[i + 1]
+            i += 2
+        elif arg.startswith("--mode="):
+            mode = arg.split("=", 1)[1]
+            i += 1
+        else:
+            rest.append(arg)
+            i += 1
+
+    raw = "--raw" in argv
+    if mode is not None and mode not in VALID_MODES:
+        raise SystemExit(f"未知 mode: {mode}，可选: {', '.join(VALID_MODES)}")
+
+    return (" ".join(rest) if rest else None), mode, raw
 
 
 if __name__ == "__main__":
@@ -281,11 +303,11 @@ if __name__ == "__main__":
 
         if line.startswith("/mode"):
             parts = line.split()
-            if len(parts) == 2 and parts[1] in ("mix", "local", "global", "naive", "hybrid"):
+            if len(parts) == 2 and parts[1] in VALID_MODES:
                 current_mode = parts[1]
                 print(f"已切换到模式: {current_mode}")
             else:
-                print("用法: /mode <mix|local|global|naive|hybrid>")
+                print(f"用法: /mode <{'|'.join(VALID_MODES)}>")
             continue
 
         try:

@@ -294,6 +294,44 @@ class TextEmbedder:
             chunk.metadata["embedding_dim"] = len(vec)
         return dense, sparse
 
+    def embed_query(self, query: str):
+        """向量化单条查询，返回 (dense, sparse)。
+
+        必须与文档侧走不同的编码路径：BGE-M3 这类模型在 query 侧要附加检索指令
+        （query_instruction_for_retrieval），直接用文档路径 encode() 会得到偏移的向量。
+
+        Returns:
+            (dense: np.ndarray shape (dim,), sparse: dict[int, float])
+            非 FlagEmbedding 后端时 sparse 为空 dict。
+        """
+        self._ensure_model()
+
+        if not self._using_flag:
+            vec = self._model.encode(
+                [query],
+                batch_size=1,
+                show_progress_bar=False,
+                normalize_embeddings=self.normalize,
+            )
+            return np.asarray(vec[0]), {}
+
+        result = self._model.encode_queries(
+            query, return_dense=True, return_sparse=True
+        )
+        if not isinstance(result, dict):
+            return np.asarray(result), {}
+
+        dense = np.asarray(result["dense_vecs"])
+        if dense.ndim > 1:
+            dense = dense[0]
+
+        # 单条查询时 lexical_weights 可能是 dict，也可能是长度为 1 的 list
+        lw = result.get("lexical_weights")
+        if isinstance(lw, list):
+            lw = lw[0] if lw else None
+        sparse = {int(k): float(v) for k, v in lw.items()} if lw else {}
+        return dense, sparse
+
     @property
     def dim(self) -> int:
         self._ensure_model()

@@ -22,6 +22,7 @@ document_parser.py — 多类型文档解析器
 """
 
 import sys
+import codecs
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
@@ -142,7 +143,7 @@ class DocumentParser:
 
     # 句末标点（这些字符后面应该断开）
     _SENTENCE_ENDS = {".", "!", "?", "。", "！", "？", ":", "：", ";", "；",
-                      ")", "）", "\"", "\"", "”", "’"}
+                      ")", "）", "\"", "“", "”", "’"}
 
     def _parse_pdf(self, path: str) -> ParsedDocument:
         import pymupdf
@@ -360,17 +361,29 @@ class DocumentParser:
     # ── 纯文本解析 ───────────────────────────────────────
 
     def _parse_text(self, path: str) -> ParsedDocument:
-        # 尝试多种编码
-        for encoding in ["utf-8", "utf-8-sig", "gbk", "gb2312", "latin-1"]:
+        # 先看真实字节里有没有 UTF-8 BOM，决定解码后是否要剥掉首字符
+        with open(path, "rb") as fb:
+            has_bom = fb.read(3) == codecs.BOM_UTF8
+
+        # 按序尝试编码，记录真正生效的那个（原来无论走哪条分支都报最后一个候选值）
+        used_encoding = "utf-8"
+        for encoding in ["utf-8", "gbk", "gb2312", "latin-1"]:
             try:
                 with open(path, "r", encoding=encoding) as f:
                     text = f.read()
-                break
             except (UnicodeDecodeError, UnicodeError):
                 continue
+            used_encoding = encoding
+            break
         else:
+            # latin-1 对任意字节都能解码，实际到不了这里，留作兜底
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 text = f.read()
+            used_encoding = "utf-8 (errors=replace)"
+
+        # utf-8 解码会把 BOM 还原成 U+FEFF，不剥掉的话会污染首个 chunk
+        if has_bom:
+            text = text[1:]
 
         # 按段落分 section（连续非空行为一段）
         lines = text.splitlines()
@@ -396,7 +409,7 @@ class DocumentParser:
             ))
 
         return ParsedDocument(
-            metadata={"lines": len(lines), "encoding": encoding},
+            metadata={"lines": len(lines), "encoding": used_encoding},
             content=text.strip(),
             sections=sections,
         )

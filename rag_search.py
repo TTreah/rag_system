@@ -81,17 +81,27 @@ class RAGSearcher:
         # 1. 混合查询向量化（dense + sparse）
         result = model.encode_queries(query, return_dense=True, return_sparse=True)
         if isinstance(result, dict):
-            dense_vec = result["dense_vecs"].tolist()
+            dense = result["dense_vecs"]
             lw = result.get("lexical_weights")
         else:
-            dense_vec = result.tolist()
+            dense = result
             lw = None
+
+        dense_vec = dense.tolist() if hasattr(dense, "tolist") else dense
+        # 单条查询可能返回 (dim,) 也可能返回 (1, dim)，压平成一维
+        if isinstance(dense_vec, list) and dense_vec and isinstance(dense_vec[0], list):
+            dense_vec = dense_vec[0]
 
         # 2. 混合检索（dense + sparse → RRF fusion）
         prefetch = [
             Prefetch(query=dense_vec, using="dense", limit=top_k * 2),
         ]
-        if lw is not None and len(lw) > 0:
+
+        # 单条查询时 lexical_weights 可能是 dict，也可能是长度为 1 的 list，
+        # 不同 FlagEmbedding 版本行为不一致，两种都要能处理
+        if isinstance(lw, list):
+            lw = lw[0] if lw else None
+        if lw:
             sparse_vec = SparseVector(
                 indices=[int(k) for k in lw.keys()],
                 values=[float(v) for v in lw.values()],
