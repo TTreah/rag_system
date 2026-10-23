@@ -12,12 +12,17 @@ test_sync_index.py — 增量同步的差异规划回归测试
 运行: python test_sync_index.py
 """
 
+import os, sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+del _sys
+
+
 import os
 import sys
 import tempfile
 
-from sync_index import scan_disk, plan_sync, SyncPlan, DiskEntry
-from vectorize_pipeline import canonical_path
+from qdrant_line.sync_index import scan_disk, plan_sync, SyncPlan, DiskEntry
+from qdrant_line.vectorize_pipeline import canonical_path
 
 FAILURES = []
 
@@ -304,7 +309,7 @@ def test_idempotent():
 def test_report_render():
     hr("8. SyncReport.describe() 不崩")
 
-    from sync_index import SyncReport
+    from qdrant_line.sync_index import SyncReport
 
     plan = SyncPlan(added=["/x"], modified=["/y"], deleted=["/z"],
                     unreadable=["/u"], unchanged=7)
@@ -384,7 +389,7 @@ def _write(path, content):
 
 
 def _make_sync(log, records=None):
-    from sync_index import IndexSynchronizer
+    from qdrant_line.sync_index import IndexSynchronizer
     return IndexSynchronizer(
         StubPipeline(log), StubManifest(log, records), fingerprint="FP",
     )
@@ -394,8 +399,8 @@ def test_orchestration():
     hr("9. 编排：删改顺序 / 幂等 / 熔断 / 分批 / 截断")
 
     import shutil
-    from sync_index import IndexSynchronizer, SafetyAbort
-    from vectorize_pipeline import canonical_path
+    from qdrant_line.sync_index import IndexSynchronizer, SafetyAbort
+    from qdrant_line.vectorize_pipeline import canonical_path
 
     tmp = tempfile.mkdtemp()
     try:

@@ -10,9 +10,14 @@ test_text_chunker.py — 分块器回归测试
 运行: python test_text_chunker.py
 """
 
+import os, sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+del _sys
+
+
 import sys
 
-from text_chunker import TextChunker
+from core.text_chunker import TextChunker
 
 FAILURES = []
 

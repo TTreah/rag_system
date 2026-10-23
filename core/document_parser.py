@@ -21,8 +21,12 @@ document_parser.py — 多类型文档解析器
     }
 """
 
+import os
 import sys
 import codecs
+import shutil
+import tempfile
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
@@ -48,6 +52,10 @@ class ParsedDocument:
     metadata: Dict[str, Any] = field(default_factory=dict)
     content: str = ""        # 全量纯文本
     sections: List[Section] = field(default_factory=list)
+    # 非文本资产：图片(bytes) 与表格(markdown text)，由流水线落盘并生成描述
+    # 结构: [{"kind": "image"|"table", "data": bytes|str, "ext": "png",
+    #         "label": "Page 3", "context": "周边文本摘要"}]
+    assets: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -95,12 +103,50 @@ class DocumentParser:
         # 演示文稿
         ".pptx": ("_parse_pptx",  "PowerPoint"),
         ".ppt":  ("_parse_pptx",  "PowerPoint (limited)"),
+
+        # 独立图片文件（无正文，作为资产入库，文件名即正文）
+        ".png":  ("_parse_image", "Image"),
+        ".jpg":  ("_parse_image", "Image"),
+        ".jpeg": ("_parse_image", "Image"),
+        ".webp": ("_parse_image", "Image"),
     }
 
     def __init__(self):
         pass
 
     # ── 公共 API ──────────────────────────────────────────
+
+    # CJK 部首补充区（U+2E80–U+2EFF）→ 统一汉字。NFKC 不覆盖这一区，
+    # 只收录本库实测出现的（扫描 CEO-files 3500 chunks 得出）
+    _RADICAL_MAP = str.maketrans({
+        "⻋": "车", "⻔": "门", "⻛": "风", "⻓": "长",
+        "⻄": "西", "⻰": "龙", "⻜": "飞", "⻚": "页",
+        "⻘": "青", "⻆": "角", "⻢": "马", "⻨": "麦",
+        "⻬": "齐", "⻅": "见", "⻩": "黄", "⻦": "鸟",
+        "⺠": "民", "⻉": "贝", "⻥": "鱼", "⻁": "虎",
+        "⺟": "母", "⻣": "骨", "⻧": "盐", "⻙": "韦",
+        "⻝": "食",
+    })
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """文本归一化（入库前必须过这道，否则非标字符让嵌入和检索双通道失效）：
+        1. 剥离孤立代理字符
+        2. NFKC：康熙部首区(U+2F00段)→标准汉字、全角→半角、半角标点→中文标点
+        3. 部首补充区(U+2E80段)映射表
+        """
+        import re
+        import unicodedata
+        if not text:
+            return text
+        text = re.sub(r"[\ud800-\udfff]", "", text)
+        text = unicodedata.normalize("NFKC", text)
+        return text.translate(DocumentParser._RADICAL_MAP)
+
+    @staticmethod
+    def _sanitize(text: str) -> str:
+        """归一化入口（保留旧名）。实际逻辑见 _normalize_text。"""
+        return DocumentParser._normalize_text(text)
 
     def parse(self, file_path: str) -> ParsedDocument:
         """
@@ -122,6 +168,16 @@ class DocumentParser:
         doc.file_path = file_path
         doc.file_type = ext
         doc.metadata.setdefault("description", description)
+
+        # 统一清洗代理字符（正文 / sections / 资产文本）
+        doc.content = self._sanitize(doc.content)
+        for s in doc.sections:
+            s.text = self._sanitize(s.text)
+        for a in doc.assets:
+            if isinstance(a.get("data"), str):
+                a["data"] = self._sanitize(a["data"])
+            if isinstance(a.get("context"), str):
+                a["context"] = self._sanitize(a["context"])
         return doc
 
     def parse_batch(self, file_paths: List[str]) -> List[ParsedDocument]:
@@ -156,6 +212,7 @@ class DocumentParser:
         }
         sections = []
         full_parts = []
+        assets = []
 
         for i in range(doc_obj.page_count):
             page = doc_obj[i]
@@ -179,6 +236,7 @@ class DocumentParser:
 
             # ── 步骤 3: 合并相邻块（跨 block 的段落）──
             merged = self._merge_blocks(cleaned_blocks)
+            page_text = "\n\n".join(merged)
 
             # ── 步骤 4: 提取表格 ──
             tables = page.find_tables()
@@ -186,11 +244,32 @@ class DocumentParser:
             for tbl in tables:
                 try:
                     tbl_data = tbl.extract()
-                    table_texts.append(self._format_table(tbl_data))
+                    fmt = self._format_table(tbl_data)
+                    table_texts.append(fmt)
+                    if fmt.strip():
+                        assets.append({
+                            "kind": "table", "data": fmt, "ext": "md",
+                            "label": f"Page {i + 1}",
+                            "context": page_text[:300],
+                        })
                 except Exception:
                     pass
 
-            page_text = "\n\n".join(merged)
+            # ── 步骤 5: 提取图片（过小的 logo/图标除外）──
+            for img in page.get_images(full=True):
+                try:
+                    info = doc_obj.extract_image(img[0])
+                    if len(info["image"]) < 10 * 1024:  # <10KB 多为装饰图标
+                        continue
+                    assets.append({
+                        "kind": "image", "data": info["image"],
+                        "ext": info.get("ext", "png"),
+                        "label": f"Page {i + 1}",
+                        "context": page_text[:300],
+                    })
+                except Exception:
+                    continue
+
             if table_texts:
                 page_text += "\n\n" + "\n\n".join(table_texts)
 
@@ -204,6 +283,7 @@ class DocumentParser:
             metadata=metadata,
             content="\n\n".join(full_parts),
             sections=sections,
+            assets=assets,
         )
 
     @classmethod
@@ -285,7 +365,19 @@ class DocumentParser:
 
     def _parse_docx(self, path: str) -> ParsedDocument:
         from docx import Document
-        doc_obj = Document(path)
+
+        # 真 .doc（二进制格式）python-docx 打不开，先转成 .docx 再解析。
+        # 只转换内容，file_path 仍指向原文件——清单追踪的是源文件本身。
+        actual_path = path
+        tmp_converted = None
+        if path.lower().endswith(".doc"):
+            try:
+                Document(path)
+            except Exception:
+                actual_path = self._convert_doc_to_docx(path)
+                tmp_converted = actual_path
+
+        doc_obj = Document(actual_path)
 
         # 读取文档属性
         props = doc_obj.core_properties
@@ -338,6 +430,7 @@ class DocumentParser:
             ))
 
         # 提取表格
+        assets = []
         for ti, table in enumerate(doc_obj.tables):
             rows = []
             for row in table.rows:
@@ -350,12 +443,85 @@ class DocumentParser:
                     text=tbl_text,
                     label=f"Table {ti + 1}",
                 ))
+                assets.append({
+                    "kind": "table", "data": tbl_text, "ext": "md",
+                    "label": f"Table {ti + 1}",
+                    "context": "\n".join(s.text for s in sections[-3:])[:300],
+                })
+
+        # 提取图片（文档关系里的嵌入图，过小的 logo/图标除外）
+        for ri, rel in enumerate(doc_obj.part.rels.values()):
+            if "image" not in rel.reltype:
+                continue
+            try:
+                blob = rel.target_part.blob
+            except Exception:
+                continue
+            if len(blob) < 10 * 1024:
+                continue
+            ext = rel.target_part.partname.ext if hasattr(rel.target_part.partname, 'ext') else "png"
+            assets.append({
+                "kind": "image", "data": blob,
+                "ext": str(ext).lstrip(".") or "png",
+                "label": f"InlineImage {ri + 1}",
+                "context": "\n".join(s.text for s in sections[:3])[:300],
+            })
 
         full_text = "\n\n".join(s.text for s in sections)
+        if tmp_converted:
+            try:
+                os.unlink(tmp_converted)
+            except OSError:
+                pass
         return ParsedDocument(
             metadata=metadata,
             content=full_text,
             sections=sections,
+            assets=assets,
+        )
+
+    @staticmethod
+    def _convert_doc_to_docx(path: str) -> str:
+        """把真 .doc 转成临时 .docx，返回临时文件路径。
+
+        优先 macOS 自带的 textutil（零依赖），其次 LibreOffice 的 soffice。
+        都没有就给出明确报错，而不是让 python-docx 抛一个看不懂的包格式异常。
+        """
+        converters = ["textutil", "soffice"]
+        for tool in converters:
+            if not shutil.which(tool):
+                continue
+            fd, tmp = tempfile.mkstemp(suffix=".docx")
+            os.close(fd)
+            try:
+                if tool == "textutil":
+                    subprocess.run(
+                        ["textutil", "-convert", "docx", path, "-output", tmp],
+                        check=True, capture_output=True, timeout=120,
+                    )
+                else:
+                    outdir = os.path.dirname(tmp)
+                    subprocess.run(
+                        ["soffice", "--headless", "--convert-to", "docx",
+                         "--outdir", outdir, path],
+                        check=True, capture_output=True, timeout=180,
+                    )
+                    produced = os.path.join(
+                        outdir, os.path.splitext(os.path.basename(path))[0] + ".docx"
+                    )
+                    if produced != tmp:
+                        os.replace(produced, tmp)
+                return tmp
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                continue
+        raise ValueError(
+            f"无法解析旧版 .doc 文件: {path}\n"
+            f"需要 textutil（macOS 自带）或 LibreOffice（soffice）做格式转换，"
+            f"当前系统两者都没有。请手工把文件另存为 .docx 后重试。"
         )
 
     # ── 纯文本解析 ───────────────────────────────────────
@@ -454,6 +620,25 @@ class DocumentParser:
             metadata=metadata,
             content="\n\n".join(full_parts),
             sections=sections,
+        )
+
+    # ── 独立图片 ─────────────────────────────────────────
+
+    def _parse_image(self, path: str) -> ParsedDocument:
+        """独立图片文件：无正文可解析，整张图作为资产交给流水线。
+
+        content 用文件名兜底（产品图编号等文件名本身可检索）。
+        """
+        with open(path, "rb") as f:
+            data = f.read()
+        name = Path(path).stem
+        ext = Path(path).suffix.lower().lstrip(".")
+        return ParsedDocument(
+            metadata={"title": name, "image": True},
+            content=name,
+            sections=[Section(index=0, text=name, label="Image")],
+            assets=[{"kind": "image", "data": data, "ext": ext,
+                     "label": "Image", "context": f"文件名：{name}"}],
         )
 
     # ── 工具 ─────────────────────────────────────────────

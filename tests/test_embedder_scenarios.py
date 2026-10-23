@@ -5,13 +5,18 @@ test_embedder_scenarios.py — 测试 embedder 两种加载方案
 方案二 (在线):  use_flag + 允许联网        → BGE-M3，允许检查 HF 更新
 """
 
+import os, sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+del _sys
+
+
 import os
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from embedder import TextEmbedder
+from core.embedder import TextEmbedder
 
 
 def hr(title):

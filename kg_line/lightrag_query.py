@@ -46,7 +46,9 @@ QUERY_DATA_ENDPOINT = f"{LIGHTRAG_URL}/query/data"
 
 DEFAULT_MODE = "mix"
 DEFAULT_TOP_K = 20
-DEFAULT_CHUNK_TOP_K = 20
+# chunk_top_k=40：图谱召回后的文本块兜底太少时，数字规则类细节
+# （投放台数、价格系数）会被截断丢失（评测 #22 即此问题）
+DEFAULT_CHUNK_TOP_K = 40
 DEFAULT_RESPONSE_TYPE = None          # None = 默认；可选 "Bullet Points" / "Single Paragraph" / "Multiple Paragraphs"
 
 # ============================================================

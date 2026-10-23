@@ -1,0 +1,29 @@
+# qdrant_standalone 依赖清单
+# 安装: pip install -r requirements.txt
+
+# ── 核心：解析 / 分块 / 入库 / 检索 ──
+numpy>=1.26
+qdrant-client>=1.12
+pymupdf>=1.24            # PDF 解析（含图片/表格资产提取）
+python-docx>=1.1         # Word 解析（.doc 经 textutil/LibreOffice 转换）
+python-pptx>=1.0         # PPT 解析
+
+# ── Qwen3-VL 嵌入 / 重排（当前默认模型栈）──
+torch>=2.5
+torchvision>=0.20        # qwen-vl-utils 依赖
+transformers>=4.57       # Qwen3-VL 架构支持
+qwen-vl-utils>=0.0.14    # 多模态预处理
+
+# ── 说明 ──
+# 模型权重不随代码分发，首次运行前需从 ModelScope 下载（约 8.5GB）：
+#   from modelscope import snapshot_download
+#   snapshot_download('Qwen/Qwen3-VL-Embedding-2B')
+#   snapshot_download('Qwen/Qwen3-VL-Reranker-2B')
+# 缓存位置 ~/.cache/modelscope/，embedder.resolve_model_path() 自动发现。
+#
+# 外部服务：
+#   - Qdrant        http://localhost:6333
+#   - DeepSeek API  查询改写 / QA增强 / 资产描述需要 key
+#                   优先读环境变量 DEEPSEEK_API_KEY；
+#                   未设置时会读 augment/query_rewriter.py 里的 LIGHTRAG_ENV
+#                   （默认指向本机 LightRAG 部署的 .env，换机器需改该常量）

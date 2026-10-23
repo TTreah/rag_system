@@ -27,6 +27,35 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def resolve_model_path(model_name: str) -> str:
+    """把模型名解析为本地缓存路径。
+
+    解析顺序：已是目录 → ModelScope 缓存 → HuggingFace 缓存 → 原样返回
+    （交给下游在线加载或报错）。入口脚本因此只需写模型名（"BAAI/bge-m3"），
+    不用关心模型实际是从哪个镜像站下的、缓存目录叫什么。
+
+    ModelScope 缓存结构: ~/.cache/modelscope/models/BAAI--bge-m3/snapshots/<版本>/
+    HuggingFace 缓存结构: ~/.cache/huggingface/hub/models--BAAI--bge-m3/snapshots/<hash>/
+    """
+    if os.path.isdir(model_name):
+        return model_name
+
+    flat = model_name.replace("/", "--")
+    caches = [
+        Path.home() / ".cache" / "modelscope" / "models" / flat,
+        Path.home() / ".cache" / "huggingface" / "hub" / ("models--" + flat),
+    ]
+    for cache in caches:
+        snapshots = cache / "snapshots"
+        if not snapshots.exists():
+            continue
+        versions = sorted(d for d in snapshots.iterdir() if d.is_dir())
+        for v in reversed(versions):          # 取最新版本
+            if (v / "config.json").exists():  # 确认是完整模型而非半截下载
+                return str(v)
+    return model_name
+
+
 # ═══════════════════════════════════════════════════════════════
 # 轻量级后备嵌入器（无需外部模型，开箱即用）
 # ═══════════════════════════════════════════════════════════════
@@ -97,6 +126,143 @@ class FallbackEmbedder:
 
 
 # ═══════════════════════════════════════════════════════════════
+# Ollama 后端（本机已有 Ollama 跑 bge-m3 时，免下载 2GB 模型）
+# ═══════════════════════════════════════════════════════════════
+
+class OllamaEmbedder:
+    """
+    通过 Ollama 的 /api/embed 做向量化。
+
+    与 FlagEmbedding 后端的差别：只有 dense 向量，没有 sparse
+    （Ollama 不暴露 lexical weights）。入库的 collection 将只建 dense 索引，
+    检索退化为纯向量相似度，不做 RRF 混合。
+    """
+
+    def __init__(self, model: str = "bge-m3",
+                 base_url: str = "http://localhost:11434", timeout: int = 120):
+        import urllib.request
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self._urlopen = urllib.request.urlopen
+        self._dim = None
+
+    def _post(self, payload: dict) -> dict:
+        import json as _json
+        import urllib.request
+        req = urllib.request.Request(
+            f"{self.base_url}/api/embed",
+            data=_json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        with self._urlopen(req, timeout=self.timeout) as resp:
+            return _json.loads(resp.read().decode("utf-8"))
+
+    def encode(
+        self,
+        texts: List[str],
+        batch_size: int = 32,
+        show_progress_bar: bool = False,
+        normalize_embeddings: bool = True,
+    ) -> np.ndarray:
+        vectors = []
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start:start + batch_size]
+            resp = self._post({"model": self.model, "input": batch})
+            vectors.extend(resp["embeddings"])
+        arr = np.asarray(vectors, dtype=np.float32)
+
+        if normalize_embeddings:
+            norms = np.linalg.norm(arr, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            arr = arr / norms
+        return arr
+
+    def get_sentence_embedding_dimension(self) -> int:
+        if self._dim is None:
+            resp = self._post({"model": self.model, "input": ["dim probe"]})
+            self._dim = len(resp["embeddings"][0])
+        return self._dim
+
+    @property
+    def device(self):
+        return "ollama"
+
+
+# ═══════════════════════════════════════════════════════════════
+# Qwen3-VL 后端（多模态嵌入：文本 + 图片）
+# ═══════════════════════════════════════════════════════════════
+
+class Qwen3VLEmbedderAdapter:
+    """
+    Qwen3-VL-Embedding 的 sentence-transformers 式接口适配。
+
+    为什么不用 Ollama 跑它：Ollama/llama.cpp 尚不支持 VL 架构的嵌入
+    （实测 /api/embed 直接报错），这里用 ModelScope 原版权重 + transformers，
+    模型仓库自带的官方脚本（scripts/qwen3_vl_embedding.py）做加载。
+
+    与 BGE-M3(FlagEmbedding) 的差别：只有 dense，没有 sparse 输出；
+    支持图片输入（本适配暂不暴露，留出接口）。
+    """
+
+    def __init__(self, model_path: str,
+                 query_instruction: str = "Given a search query, retrieve "
+                                          "relevant passages that answer the query.",
+                 prefer_mps: bool = True):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "qwen3_vl_embedding",
+            os.path.join(model_path, "scripts", "qwen3_vl_embedding.py"),
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self._emb = mod.Qwen3VLEmbedder(model_name_or_path=model_path)
+        # 官方脚本只认 cuda/cpu；Mac 上挪到 MPS 提速。
+        # 并发服务场景必须关掉：MPS 非线程安全，多请求并发会触发
+        # Metal 断言直接崩进程（实测：8 路并发嵌入时崩溃）
+        if prefer_mps:
+            try:
+                import torch
+                if torch.backends.mps.is_available():
+                    self._emb.model.to("mps")
+            except Exception:
+                pass
+        self.query_instruction = query_instruction
+
+    def encode(
+        self,
+        texts: List[str],
+        batch_size: int = 8,
+        show_progress_bar: bool = False,
+        normalize_embeddings: bool = True,
+        is_query: bool = False,
+    ) -> np.ndarray:
+        vectors = []
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start:start + batch_size]
+            inputs = []
+            for t in batch:
+                item = {"text": t}
+                # 查询侧带检索指令，文档侧不带（非对称检索）
+                if is_query:
+                    item["instruction"] = self.query_instruction
+                inputs.append(item)
+            emb = self._emb.process(inputs, normalize=normalize_embeddings)
+            # bf16 → float32 再转 numpy（numpy 不认 bf16）
+            vectors.append(emb.float().cpu().numpy())
+        return np.vstack(vectors) if vectors else np.zeros((0, 2048))
+
+    def get_sentence_embedding_dimension(self) -> int:
+        # Qwen3VLConfig 是嵌套结构，没有顶层 hidden_size，实测一条最准
+        vec = self._emb.process([{"text": "dim probe"}], normalize=False)
+        return int(vec.shape[-1])
+
+    @property
+    def device(self):
+        return str(self._emb.model.device)
+
+
+# ═══════════════════════════════════════════════════════════════
 # 主嵌入器
 # ═══════════════════════════════════════════════════════════════
 
@@ -138,6 +304,9 @@ class TextEmbedder:
         fallback_dim: int = 256,
         use_fallback: bool = False,       # 强制使用轻量嵌入（跳过 HF 下载）
         use_flag_embedding: bool = False, # 使用 FlagEmbedding 后端（BGE-M3 等）
+        use_ollama: bool = False,         # 使用本机 Ollama 后端（免下载模型）
+        use_qwen3_vl: bool = False,       # 使用 Qwen3-VL 多模态嵌入（本地权重）
+        ollama_url: str = "http://localhost:11434",
         modelscope_dir: Optional[str] = None,  # ModelScope 本地模型目录
     ):
         """
@@ -164,12 +333,16 @@ class TextEmbedder:
         self.fallback_dim = fallback_dim
         self.use_fallback = use_fallback
         self.use_flag_embedding = use_flag_embedding
+        self.use_ollama = use_ollama
+        self.use_qwen3_vl = use_qwen3_vl
+        self.ollama_url = ollama_url
         self.modelscope_dir = modelscope_dir
 
         self._model = None
         self._dim = None
         self._using_fallback = False
         self._using_flag = False
+        self._using_qwen3vl = False
 
     # ── 公共 API ──────────────────────────────────────────
 
@@ -249,16 +422,21 @@ class TextEmbedder:
         self,
         chunks: List[Any],
         batch_size: Optional[int] = None,
+        texts: Optional[List[str]] = None,
     ):
         """对 chunks 向量化，返回 (dense, sparse) 元组。
 
         sparse 为 dict 列表，key 已转为 int，可直接用于 Qdrant SparseVector。
 
+        Args:
+            texts: 实际用于向量化的文本（默认 chunk.text）。QA 增强时传入
+                "原文+假设问题"的拼接文本，payload 里存的仍是原文。
+
         Returns:
             (dense: np.ndarray shape (n, 1024),
              sparse: list[dict[int, float]])
         """
-        texts = [c.text for c in chunks]
+        texts = texts if texts is not None else [c.text for c in chunks]
         bs = batch_size or self.batch_size
         self._ensure_model()
 
@@ -305,6 +483,14 @@ class TextEmbedder:
             非 FlagEmbedding 后端时 sparse 为空 dict。
         """
         self._ensure_model()
+
+        if self._using_qwen3vl:
+            # Qwen3-VL：查询侧带检索指令（非对称检索）
+            vec = self._model.encode(
+                [query], batch_size=1,
+                normalize_embeddings=self.normalize, is_query=True,
+            )
+            return np.asarray(vec[0]), {}
 
         if not self._using_flag:
             vec = self._model.encode(
@@ -364,6 +550,16 @@ class TextEmbedder:
         # 强制降级模式
         if self.use_fallback:
             self._init_fallback()
+            return
+
+        # Ollama 本机后端（dense-only）
+        if self.use_ollama:
+            self._init_ollama()
+            return
+
+        # Qwen3-VL 多模态后端（dense-only）
+        if self.use_qwen3_vl:
+            self._init_qwen3vl()
             return
 
         # FlagEmbedding 后端（BGE-M3 等返回多向量 dict 的模型）
@@ -437,15 +633,31 @@ class TextEmbedder:
         os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
         from FlagEmbedding import FlagAutoModel
-        print(f"[Embedder] Loading FlagEmbedding model from cache: {self.model_name} ...",
+        model_path = resolve_model_path(self.model_name)
+        if model_path != self.model_name:
+            print(f"[Embedder] Resolved local model: {model_path}", file=sys.stderr)
+        print(f"[Embedder] Loading FlagEmbedding model from cache: {model_path} ...",
               file=sys.stderr)
-        self._model = FlagAutoModel.from_finetuned(
-            self.model_name,
-            query_instruction_for_retrieval=(
-                "Represent this sentence for searching relevant passages:"
-            ),
-            use_fp16=True,
-        )
+        try:
+            self._model = FlagAutoModel.from_finetuned(
+                model_path,
+                query_instruction_for_retrieval=(
+                    "Represent this sentence for searching relevant passages:"
+                ),
+                use_fp16=True,
+            )
+        except ValueError:
+            # FlagAutoModel 靠路径 basename 识别模型类别，本地缓存目录名
+            # （如 ModelScope 的 snapshots/master）识别不了 → 回退到
+            # BGEM3FlagModel，它直接接受任意本地路径
+            from FlagEmbedding import BGEM3FlagModel
+            self._model = BGEM3FlagModel(
+                model_path,
+                query_instruction_for_retrieval=(
+                    "Represent this sentence for searching relevant passages:"
+                ),
+                use_fp16=True,
+            )
         self._dim = 1024  # BGE-M3 固定 1024 维
         self._using_fallback = False
         self._using_flag = True
@@ -455,6 +667,24 @@ class TextEmbedder:
             f"Device={device}",
             file=sys.stderr,
         )
+
+    def _init_qwen3vl(self):
+        model_path = resolve_model_path(self.model_name)
+        print(f"[Embedder] Loading Qwen3-VL embedding: {model_path} ...",
+              file=sys.stderr)
+        self._model = Qwen3VLEmbedderAdapter(model_path)
+        self._dim = self._model.get_sentence_embedding_dimension()
+        self._using_qwen3vl = True
+        print(f"[Embedder] Qwen3-VL loaded. Dim={self._dim}, "
+              f"Device={self._model.device}", file=sys.stderr)
+
+    def _init_ollama(self):
+        # Ollama 模型名不带组织前缀："BAAI/bge-m3" → "bge-m3"
+        model = self.model_name.split("/")[-1]
+        self._model = OllamaEmbedder(model=model, base_url=self.ollama_url)
+        self._dim = self._model.get_sentence_embedding_dimension()
+        print(f"[Embedder] Using Ollama backend: {model} "
+              f"(dim={self._dim}, {self.ollama_url})", file=sys.stderr)
 
     def _init_fallback(self):
         print(

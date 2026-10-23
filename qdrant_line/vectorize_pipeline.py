@@ -6,7 +6,7 @@ vectorize_pipeline.py — 文档向量化流水线
     python vectorize_pipeline.py <file_or_dir> [<file_or_dir> ...]
 
     或作为模块使用:
-    from vectorize_pipeline import VectorizePipeline
+    from qdrant_line.vectorize_pipeline import VectorizePipeline
     pipeline = VectorizePipeline()
     pipeline.run(["doc1.pdf", "doc2.docx"])
 
@@ -27,9 +27,9 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 import numpy as np
 
-from document_parser import DocumentParser, ParsedDocument
-from text_chunker import TextChunker, Chunk
-from embedder import TextEmbedder
+from core.document_parser import DocumentParser, ParsedDocument
+from core.text_chunker import TextChunker, Chunk
+from core.embedder import TextEmbedder, resolve_model_path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════
 
 # 解析逻辑变更时手动 +1，使 pipeline_fingerprint 变化、触发全量重建
-PARSER_VERSION = "1"
+PARSER_VERSION = "2"  # v2: 解析层加 Unicode 归一化
 
 
 def canonical_path(p) -> str:
@@ -66,12 +66,21 @@ def pipeline_fingerprint(config: "PipelineConfig") -> str:
     任一环节变化都会让已入库的向量过期，但文件本身一个字节没变，靠文件哈希
     比对查不出来。把它写进 payload，检测到不一致就按全量重建处理，避免新旧
     两种切法的 chunk 混在同一个 collection 里、检索质量静默下降。
+
+    embedding_model 先经 resolve_model_path 归一：模型名（"BAAI/bge-m3"）和
+    本地缓存绝对路径指向同一个模型，必须产生同一个指纹，否则换种写法就会
+    被误判为"模型换了"而全量重建。
     """
     parts = [
         "parser", PARSER_VERSION,
         "chunk", str(config.chunk_strategy), str(config.chunk_size),
         str(config.chunk_overlap), str(config.min_chunk_size),
-        "embed", str(config.embedding_model), str(config.embedding_use_flag),
+        str(config.chunk_context_header), str(config.qa_augment),
+        str(config.extract_assets),
+        "embed", resolve_model_path(str(config.embedding_model)),
+        str(config.embedding_use_flag),
+        str(config.embedding_use_ollama),
+        str(config.embedding_use_qwen3_vl),
     ]
     return hashlib.md5("|".join(parts).encode()).hexdigest()[:16]
 
@@ -84,17 +93,36 @@ def pipeline_fingerprint(config: "PipelineConfig") -> str:
 class PipelineConfig:
     """流水线可调参数"""
     # ── 分块 ──
+    # 768/100：制度类文档的 bullet 列表较长，512 会把"问题情境"和"答案数字"
+    # 切进两个块（评测中价格系数类用例失败即此原因）；放大窗口让列表整块保留
     chunk_strategy: str = "recursive"   # fixed / recursive / sentence / markdown
-    chunk_size: int = 512
-    chunk_overlap: int = 64
+    chunk_size: int = 768
+    chunk_overlap: int = 100
     min_chunk_size: int = 200
+    # 每个 chunk 文本前置【文件名｜章节】上下文头：
+    # 口语化查询（"导购怎么推荐车"）与正文字面重合少，上下文头给 dense/sparse
+    # 两个通道都补上文档级关键词，同时让单条结果可溯源、脱离上下文也可读
+    chunk_context_header: bool = True
+    # QA 对增强：入库时为每个 chunk 生成若干口语化假设问题，与原文拼接后
+    # 一起向量化（payload 里仍存原文）。口语查询直接命中假设问题。
+    # 成本：每 chunk 一次小 LLM 调用，仅入库时发生
+    qa_augment: bool = False
+    qa_questions_per_chunk: int = 3
+
+    # ── 资产提取（图片/表格）──
+    # 把文档里的图片、表格另存为 <文档目录>/kb-assets/<文档名>/ 下的文件，
+    # 生成描述文字入库并关联文件路径；检索命中描述时返回资产路径
+    extract_assets: bool = True
 
     # ── 嵌入 ──
-    embedding_model: str = "BAAI/bge-m3"
+    embedding_model: str = "Qwen/Qwen3-VL-Embedding-2B"
     embedding_batch_size: int = 32
     embedding_normalize: bool = True
     embedding_device: Optional[str] = None  # None = auto
     embedding_use_flag: bool = False        # 使用 FlagEmbedding 后端（BGE-M3）
+    embedding_use_ollama: bool = False      # 使用本机 Ollama 后端（dense-only）
+    embedding_use_qwen3_vl: bool = True     # 使用 Qwen3-VL 多模态嵌入（dense-only）
+    ollama_url: str = "http://localhost:11434"
 
     # ── Qdrant ──
     qdrant_url: str = "http://localhost:6333"
@@ -138,6 +166,7 @@ class VectorizePipeline:
         self._chunker: Optional[TextChunker] = None
         self._embedder: Optional[TextEmbedder] = None
         self._qdrant: Optional[Any] = None
+        self._asset_root: Optional[str] = None
 
     # ── 完整流程 ─────────────────────────────────────────
 
@@ -165,6 +194,16 @@ class VectorizePipeline:
             logger.warning("No files found to process.")
             return []
         logger.info(f"Found {len(files)} file(s) to process")
+
+        # 资产统一放「入库根目录」的 kb-assets/ 下，而不是每个子目录各自一份：
+        # 根目录取输入里的目录（或文件的公共父目录）
+        dirs = [i for i in inputs if os.path.isdir(i)]
+        if dirs:
+            self._asset_root = os.path.join(dirs[0], self.ASSET_DIR_NAME)
+        else:
+            self._asset_root = os.path.join(
+                os.path.commonpath([os.path.dirname(f) for f in files]),
+                self.ASSET_DIR_NAME)
 
         # Step 1: 解析文档
         logger.info("=" * 50)
@@ -281,10 +320,16 @@ class VectorizePipeline:
                 else:
                     logger.debug("Skipped unsupported: %s", p.name)
             elif p.is_dir():
-                pattern = "*" if self.config.recursive else "*.*"
+                # 跳过自动生成的资产目录：里面的 .md 是表格资产，
+                # 不是待入库文档（否则二次入库会把它们当文档重复入库）
+                from qdrant_line.sync_index import SKIP_DIR_NAMES
                 glob_method = p.rglob if self.config.recursive else p.glob
-                for f in glob_method(pattern):
-                    if f.is_file() and f.suffix.lower() in allowed:
+                for f in glob_method("*"):
+                    if not f.is_file():
+                        continue
+                    if any(part in SKIP_DIR_NAMES for part in f.parts):
+                        continue
+                    if f.suffix.lower() in allowed:
                         files.append(canonical_path(f))
             else:
                 logger.warning("Skipped: %s", inp)
@@ -339,7 +384,23 @@ class VectorizePipeline:
                 chunks = self._chunker.split(doc.content, doc_meta)
 
             for c in chunks:
+                # 上下文头：让 chunk 脱离原文也能被独立理解和命中。
+                # 注意此后 c.text 不再是原文的纯切片，char_start/char_end
+                # 仍指向原文位置（不含头部），仅用于溯源展示
+                if self.config.chunk_context_header:
+                    sec_label = c.metadata.get("section_label", "") or "正文"
+                    header = f"【{doc_meta['file_name']}｜{sec_label}】\n"
+                    c.text = header + c.text
                 # 确保 chunk 有唯一 ID
+                c.metadata.setdefault("doc_id", self._hash_path(doc.file_path))
+                c.metadata.setdefault("chunk_id", str(uuid.uuid4()))
+                all_chunks.append(c)
+                chunk_doc_map[len(all_chunks) - 1] = di
+
+            # 资产（图片/表格）：落盘 + 描述文字 chunk
+            asset_chunks = self._build_asset_chunks(
+                doc, doc_meta, start_index=len(chunks))
+            for c in asset_chunks:
                 c.metadata.setdefault("doc_id", self._hash_path(doc.file_path))
                 c.metadata.setdefault("chunk_id", str(uuid.uuid4()))
                 all_chunks.append(c)
@@ -351,10 +412,104 @@ class VectorizePipeline:
 
     # ── 嵌入 ─────────────────────────────────────────────
 
+    # 资产落盘的目录名（在文档所在目录下创建）
+    ASSET_DIR_NAME = "kb-assets"
+
+    def _build_asset_chunks(
+        self,
+        doc: ParsedDocument,
+        doc_meta: Dict[str, Any],
+        start_index: int,
+    ) -> List[Chunk]:
+        """图片/表格资产：落盘保存 + LLM 生成描述 → 描述 chunk 入库。
+
+        chunk.text = 描述文字（可检索）；chunk.metadata.asset_path 关联文件。
+        """
+        if not self.config.extract_assets or not doc.assets:
+            return []
+
+        from augment.asset_describer import describe_table, describe_image
+
+        stem = Path(doc.file_path).stem
+        # 文件名里的空格/斜杠会导致路径问题，做个简单清理
+        safe_stem = "".join(c if c.isalnum() or c in "-_（）()" else "_"
+                            for c in stem)[:60]
+        out_dir = os.path.join(
+            self._asset_root or os.path.join(os.path.dirname(doc.file_path),
+                                             self.ASSET_DIR_NAME),
+            safe_stem)
+        os.makedirs(out_dir, exist_ok=True)
+
+        title = doc_meta.get("file_name", stem)
+        chunks = []
+        for i, asset in enumerate(doc.assets):
+            ext = asset.get("ext", "png")
+            fname = f"{asset['kind']}_{i + 1:02d}.{ext}"
+            fpath = os.path.join(out_dir, fname)
+            try:
+                if asset["kind"] == "image":
+                    with open(fpath, "wb") as f:
+                        f.write(asset["data"])
+                else:  # table：存 markdown 文本（errors 兜底防漏网代理字符）
+                    with open(fpath, "w", encoding="utf-8",
+                              errors="replace") as f:
+                        f.write(str(asset["data"]))
+            except OSError as e:
+                logger.warning("资产落盘失败 %s: %s", fpath, e)
+                continue
+
+            if asset["kind"] == "image":
+                desc = describe_image(title, asset.get("label", ""),
+                                      asset.get("context", ""))
+            else:
+                desc = describe_table(title, asset.get("label", ""),
+                                      asset.get("context", ""),
+                                      str(asset["data"]))
+
+            text = (f"【{title}｜{asset.get('label', '')}】\n"
+                    f"[{'图片' if asset['kind'] == 'image' else '表格'}] {desc}")
+            chunks.append(Chunk(
+                text=text,
+                metadata={**doc_meta,
+                          "chunk_method": "asset_desc",
+                          "asset_type": asset["kind"],
+                          "asset_path": fpath,
+                          "section_label": asset.get("label", "")},
+                chunk_index=start_index + i,
+            ))
+        if chunks:
+            logger.info("  资产: %s → %d 个（%s）", title, len(chunks), out_dir)
+        return chunks
+
     def _embed_chunks(self, chunks: List[Chunk]):
-        """返回 (dense_vectors, sparse_vectors) 元组"""
+        """返回 (dense_vectors, sparse_vectors) 元组。
+
+        qa_augment 开启时：为每个 chunk 生成口语化假设问题，拼在原文后
+        一起向量化；问题同时记入 chunk.metadata["qa_questions"] 备查。
+        payload 里的 text 仍是原文，检索展示不受影响。
+        """
         embedder = self._ensure_embedder()
-        return embedder.embed_chunks_hybrid(chunks, batch_size=self.config.embedding_batch_size)
+
+        texts = None
+        if self.config.qa_augment:
+            from augment.qa_augment import generate_questions
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _gen(c):
+                qs = generate_questions(
+                    c.text, n=self.config.qa_questions_per_chunk)
+                c.metadata["qa_questions"] = qs
+                if qs:
+                    return c.text + "\n\n相关问法：" + "；".join(qs)
+                return c.text
+
+            # 每条一次 LLM 调用，串行太慢（3500 chunks ≈ 5h），8 路并发
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                texts = list(pool.map(_gen, chunks))
+            logger.info("QA 增强完成：%d chunks", len(texts))
+
+        return embedder.embed_chunks_hybrid(
+            chunks, batch_size=self.config.embedding_batch_size, texts=texts)
 
     # ── Qdrant 存储 ──────────────────────────────────────
 
@@ -472,6 +627,39 @@ class VectorizePipeline:
             field_schema=PayloadSchemaType.KEYWORD,
             wait=True,
         )
+
+    def list_indexed_files(self) -> Dict[str, Dict[str, Any]]:
+        """列出库中已入库的文件清单：{规范路径: {file_hash, chunk_count}}。
+
+        从主 collection 的 payload 聚合（按 source_file 去重计数）。
+        供 kb_add/kb_update/kb_delete 做名称/哈希定位与"是否已入库"判断。
+        """
+        self._ensure_qdrant()
+        # collection 还不存在（首次入库前的查询）视为空库
+        if not self._qdrant.collection_exists(self.config.qdrant_collection):
+            return {}
+        by_file: Dict[str, Dict[str, Any]] = {}
+        offset = None
+        while True:
+            points, offset = self._qdrant.scroll(
+                collection_name=self.config.qdrant_collection,
+                limit=2000, offset=offset,
+                with_payload=["source_file", "file_hash"],
+                with_vectors=False,
+            )
+            for p in points:
+                payload = p.payload or {}
+                path = payload.get("source_file")
+                if not path:
+                    continue
+                rec = by_file.setdefault(path, {
+                    "file_hash": payload.get("file_hash", ""),
+                    "chunk_count": 0,
+                })
+                rec["chunk_count"] += 1
+            if offset is None:
+                break
+        return by_file
 
     def delete_by_source_files(
         self, source_files: List[str], batch_size: int = 500
@@ -600,6 +788,9 @@ class VectorizePipeline:
                 normalize=self.config.embedding_normalize,
                 device=self.config.embedding_device,
                 use_flag_embedding=self.config.embedding_use_flag,
+                use_ollama=self.config.embedding_use_ollama,
+                use_qwen3_vl=self.config.embedding_use_qwen3_vl,
+                ollama_url=self.config.ollama_url,
             )
         return self._embedder
 
@@ -645,6 +836,6 @@ if __name__ == "__main__":
     # 纯库模块，无 CLI。使用方式见 run_news.py / rag_search.py
     print("vectorize_pipeline.py — library module, no CLI.")
     print("Usage:")
-    print("  from vectorize_pipeline import VectorizePipeline, PipelineConfig")
+    print("  from qdrant_line.vectorize_pipeline import VectorizePipeline, PipelineConfig")
     print("  pipeline = VectorizePipeline(PipelineConfig(...))")
     print("  pipeline.run(['/path/to/docs/'])")

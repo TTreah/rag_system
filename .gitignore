@@ -11,3 +11,11 @@ env/
 # 编辑器
 .vscode/
 .idea/
+
+# macOS
+.DS_Store
+
+# 运行时状态（本机绝对路径清单，不入版本库）
+kg_manifest.json
+file_manifest.json
+*.lock
