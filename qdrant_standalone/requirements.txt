@@ -8,7 +8,7 @@ pymupdf>=1.24            # PDF 解析（含图片/表格资产提取）
 python-docx>=1.1         # Word 解析（.doc 经 textutil/LibreOffice 转换）
 python-pptx>=1.0         # PPT 解析
 
-# ── Qwen3-VL 嵌入 / 重排（当前默认模型栈）──
+# ── Qwen3-VL 嵌入 / 重排（唯一模型栈）──
 torch>=2.5
 torchvision>=0.20        # qwen-vl-utils 依赖
 transformers>=4.57       # Qwen3-VL 架构支持

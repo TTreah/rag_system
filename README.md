@@ -23,8 +23,8 @@ rag_system/
 |---|---|
 | document_parser.py | 多格式文档解析（PDF/DOCX/PPT/TXT），`.doc` 老格式经 textutil/LibreOffice 自动转换，输出统一 ParsedDocument |
 | text_chunker.py | 多策略文本分块（fixed/recursive/sentence/markdown/section），含小碎块合并与尾部 overlap 预告 |
-| embedder.py | 嵌入模型封装：Qwen3-VL 多模态（当前默认，2048维）、FlagEmbedding/BGE-M3（dense+sparse）、Ollama、哈希降级，自动解析本地缓存 |
-| reranker.py | 重排序器：Qwen3-VL-Reranker-2B（默认，yes/no logit 打分）或 BGE-Reranker-v2-m3，含相关性闸门阈值（0.30，按后端区分） |
+| embedder.py | Qwen3-VL-Embedding-2B 多模态嵌入（文本+图片，2048维），无模型时降级为哈希嵌入 |
+| reranker.py | Qwen3-VL-Reranker-2B 重排（yes/no logit 打分），含相关性闸门阈值 0.50 |
 
 ## qdrant_line/ — Qdrant 向量线
 

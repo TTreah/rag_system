@@ -8,14 +8,11 @@ pymupdf>=1.24            # PDF 解析
 python-docx>=1.1         # Word 解析
 python-pptx>=1.0         # PPT 解析
 
-# ── Qwen3-VL 嵌入 / 重排（当前默认模型栈）──
+# ── Qwen3-VL 嵌入 / 重排（唯一模型栈）──
 torch>=2.5
 torchvision>=0.20        # qwen-vl-utils 依赖
 transformers>=4.57       # Qwen3-VL 需要
 qwen-vl-utils>=0.0.14
-
-# ── 可选：BGE 后端（dense+sparse 混合检索，已非默认）──
-# FlagEmbedding>=1.3
 
 # ── 可选：下载模型用（ModelScope 镜像，首次部署后不再需要）──
 # modelscope>=1.25

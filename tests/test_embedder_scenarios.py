@@ -1,95 +1,65 @@
 """
-test_embedder_scenarios.py — 测试 embedder 两种加载方案
+test_embedder_scenarios.py — Qwen3-VL 嵌入器冒烟测试
 
-方案一 (离线):  use_flag + 默认离线变量    → 从缓存加载 BGE-M3，不联网
-方案二 (在线):  use_flag + 允许联网        → BGE-M3，允许检查 HF 更新
+覆盖：
+  1. 从本地 ModelScope 缓存加载 Qwen3-VL-Embedding-2B（维度 2048）
+  2. 文本相似度合理性（相关 > 无关）
+  3. 查询侧嵌入（带检索指令）
+  4. 图片向量化（若提供 --image 路径）
 """
-
-import os, sys as _sys
-_sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-del _sys
-
 
 import os
 import sys
-import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import core  # noqa: F401
 
+import numpy as np
 from core.embedder import TextEmbedder
 
 
 def hr(title):
-    print(f"\n{'=' * 65}")
-    print(f"  {title}")
-    print(f"{'=' * 65}")
+    print(f"\n{'=' * 65}\n  {title}\n{'=' * 65}")
 
 
-# ─── 方案一：离线模式（默认，缓存中加载 BGE-M3）─────────────
-
-def test_offline():
-    hr("TEST 1/2 — Offline mode (default, cached BGE-M3)")
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ["TRANSFORMERS_OFFLINE"] = "1"
-
-    t0 = time.time()
-    embedder = TextEmbedder(model_name="bge-m3", use_flag_embedding=True)
+def main():
+    hr("Qwen3-VL-Embedding 冒烟测试")
+    embedder = TextEmbedder()  # 默认 Qwen/Qwen3-VL-Embedding-2B
     vec = embedder.embed(["你好世界 Hello world"])
-    elapsed = time.time() - t0
-
-    ok = embedder.is_flag and not embedder.is_fallback and embedder.dim == 1024
-    print(f"  Dim: {embedder.dim}")
+    print(f"  Dim:         {embedder.dim}")
     print(f"  is_fallback: {embedder.is_fallback}")
-    print(f"  is_flag:     {embedder.is_flag}")
     print(f"  Shape:       {vec.shape}")
-    print(f"  Time:        {elapsed:.2f}s")
 
-    if ok:
-        vec2 = embedder.embed(["完全不同的另一段文本"])
-        cosine = float((vec[0] @ vec2[0]) /
-                       (__import__('numpy').linalg.norm(vec[0]) *
-                        __import__('numpy').linalg.norm(vec2[0])))
-        print(f"  Cosine sim (diff texts): {cosine:.4f} (should be < 0.95)")
-    print(f"  Result:      {'[PASS]' if ok else '[FAIL]'}")
-    return ok
+    ok = (not embedder.is_fallback) and embedder.dim == 2048
 
+    a = embedder.embed(["千里达运动产品开发控制程序"])[0]
+    b = embedder.embed(["千里达新产品定价标准作业流程"])[0]
+    c = embedder.embed(["红烧肉的做法"])[0]
+    sim_rel = float(a @ b)
+    sim_irr = float(a @ c)
+    print(f"  相关文本相似度: {sim_rel:.4f}")
+    print(f"  无关文本相似度: {sim_irr:.4f}")
+    ok = ok and sim_rel > sim_irr
 
-# ─── 方案二：在线模式（允许联网检查更新）────────────────────
+    q, sparse = embedder.embed_query("M985 的目标用户是谁？")
+    print(f"  查询向量: {q.shape} | sparse: {sparse}")
+    ok = ok and q.shape == (2048,)
 
-def test_online():
-    hr("TEST 2/2 — Online mode (allow HF version check)")
-    os.environ["HF_HUB_OFFLINE"] = "0"
-    os.environ["TRANSFORMERS_OFFLINE"] = "0"
-
-    t0 = time.time()
-    embedder = TextEmbedder(model_name="bge-m3", use_flag_embedding=True)
-    vec = embedder.embed(["你好世界 Hello world"])
-    elapsed = time.time() - t0
-
-    ok = embedder.is_flag and not embedder.is_fallback and embedder.dim == 1024
-    print(f"  Dim: {embedder.dim}")
-    print(f"  is_fallback: {embedder.is_fallback}")
-    print(f"  is_flag:     {embedder.is_flag}")
-    print(f"  Shape:       {vec.shape}")
-    print(f"  Time:        {elapsed:.2f}s")
-    print(f"  Result:      {'[PASS]' if ok else '[FAIL]'}")
-    return ok
-
-
-# ─── Main ───────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    print("embedder test — offline / online")
-    print(f"Python:  {sys.executable}")
-
-    results = {}
-    results["offline"] = test_offline()
-    results["online"]  = test_online()
+    img = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--image" and i + 1 < len(sys.argv):
+            img = sys.argv[i + 1]
+    if img and os.path.exists(img):
+        from core.embedder import Qwen3VLEmbedderAdapter, resolve_model_path
+        adapter = Qwen3VLEmbedderAdapter(resolve_model_path(embedder.model_name))
+        iv = adapter.encode_images([img])[0]
+        print(f"  图片向量: {iv.shape}")
+        ok = ok and iv.shape == (2048,)
 
     hr("SUMMARY")
-    all_pass = True
-    for name, ok in results.items():
-        print(f"  {name:12s}: {'[PASS]' if ok else '[FAIL]'}")
-        all_pass = all_pass and ok
-    print(f"\n  {'Overall: ALL PASS' if all_pass else 'Overall: SOME FAILED'}")
-    sys.exit(0 if all_pass else 1)
+    print(f"  {'[PASS]' if ok else '[FAIL]'}")
+    sys.exit(0 if ok else 1)
+
+
+if __name__ == "__main__":
+    main()

@@ -46,7 +46,7 @@ def get_model():
         path = resolve_model_path(MODEL_NAME)
         logger.info("Loading %s from %s ...", MODEL_NAME, path)
         # 服务端必须 CPU：LightRAG 并发 8 路调嵌入，MPS 非线程安全会崩
-        _model = Qwen3VLEmbedderAdapter(path, prefer_mps=True)  # MPS + 串行锁
+        _model = Qwen3VLEmbedderAdapter(path)  # 默认走 MPS；请求串行锁在下面
         logger.info("Model ready. dim=%d device=%s",
                     _model.get_sentence_embedding_dimension(), _model.device)
     return _model

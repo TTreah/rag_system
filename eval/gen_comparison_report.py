@@ -53,7 +53,7 @@ conclusion = """【最终结论】
 5. 当前栈配置：
    - 嵌入：Qwen/Qwen3-VL-Embedding-2B（ModelScope 本地权重 + transformers，dense-only，2048 维）
    - 重排：Qwen/Qwen3-VL-Reranker-2B（yes/no logit 打分，闸门 0.30）
-   - 图谱：LightRAG（DeepSeek 抽取 + Ollama bge-m3 嵌入，服务端独立）
+   - 图谱：LightRAG（DeepSeek 抽取 + Qwen3-VL 嵌入中介服务）
    - 注意：Ollama 上的 VL 版 GGUF 不可用（嵌入端点架构不支持、reranker 转换质量差），两个模型均走本地 PyTorch 权重。
 
 6. 多模态能力已就位但未启用：Qwen3-VL 支持图片嵌入与重排，当前文档均为纯文本，接口已预留（embedder 适配层支持 image 输入）。后续若入库含图片的文档（产品图、海报），嵌入链路无需改造。

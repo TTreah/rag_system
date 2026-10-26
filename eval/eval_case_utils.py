@@ -17,9 +17,11 @@ from docx.oxml.ns import qn
 
 
 def load_cases(docx_path: str) -> List[Dict[str, str]]:
-    """读测试用例 docx 的第一张表 → [{id, query, expect_file, expect_points}]"""
+    """读测试用例 docx 的第一张表 → [{id, query, expect_file, expect_points, evidence}]"""
     doc = Document(docx_path)
     table = doc.tables[0]
+    header = [c.text.strip() for c in table.rows[0].cells]
+    ev_idx = next((i for i, h in enumerate(header) if "依据块" in h), None)
     cases = []
     for row in table.rows[1:]:  # 跳过表头
         cells = [c.text.strip() for c in row.cells]
@@ -30,6 +32,7 @@ def load_cases(docx_path: str) -> List[Dict[str, str]]:
             "query": cells[1],
             "expect_file": cells[2],
             "expect_points": cells[3],
+            "evidence": cells[ev_idx] if ev_idx is not None and ev_idx < len(cells) else "",
         })
     return cases
 

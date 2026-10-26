@@ -39,7 +39,7 @@ REPORT_DOCX = "/Users/trinxai/Documents/pythonfile/测试用例/Qdrant检索测�
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--top-k", type=int, default=3)
+    ap.add_argument("--top-k", type=int, default=5)
     ap.add_argument("--collection", default="news_collection",
                     help="目标 collection（如 CEO-files）")
     ap.add_argument("--coverage-threshold", type=float, default=0.5)
@@ -102,13 +102,28 @@ def main():
             continue
 
         expect_stem = file_stem(case["expect_file"])
+        # 依据块（1-5 个）：格式 "文件名#块号；文件名#块号"
+        ev_pairs = set()
+        for part in (case.get("evidence") or "").split("；"):
+            part = part.strip()
+            if "#" in part:
+                name, idx = part.rsplit("#", 1)
+                try:
+                    ev_pairs.add((file_stem(name), int(idx)))
+                except ValueError:
+                    pass
+
         rank = None
         hit_texts = []
         for i, r in enumerate(results, 1):
-            if file_stem(r.get("source_file", "")) == expect_stem:
+            stem = file_stem(r.get("source_file", ""))
+            if ev_pairs:
+                matched = (stem, r.get("chunk_index")) in ev_pairs
+            else:
+                matched = stem == expect_stem
+            if matched:
                 if rank is None:
                     rank = i
-                # 同一文件在 top-k 里可能命中多个 chunk，答案可能在任何一块里
                 hit_texts.append(r.get("text", ""))
 
         # 要点覆盖：在该文件所有命中 chunk 的合集上算；

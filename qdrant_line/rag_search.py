@@ -36,7 +36,7 @@ QDRANT_URL = "http://localhost:6333"
 COLLECTION_NAME = "news_collection"
 # 模型名即可：TextEmbedder 会自动解析到 ModelScope / HuggingFace 本地缓存
 MODEL_NAME = "Qwen/Qwen3-VL-Embedding-2B"
-TOP_K = 3
+TOP_K = 5
 
 # ============================================================
 
@@ -61,12 +61,14 @@ class RAGSearcher:
         model_name: str = MODEL_NAME,
         use_rerank: bool = True,
         rerank_threshold: float = RERANK_THRESHOLD,
+        max_images: int = 2,
     ):
         self._qdrant_url = qdrant_url
         self._collection = collection
         self._model_name = model_name
         self._use_rerank = use_rerank
         self._rerank_threshold = rerank_threshold
+        self._max_images = max_images
         self._embedder = None
         self._reranker = None
         self._client = None
@@ -154,7 +156,28 @@ class RAGSearcher:
                           if r["rerank_score"] >= self._rerank_threshold]
             candidates.sort(key=lambda r: r["rerank_score"], reverse=True)
 
-        return candidates[:top_k]
+        # 去重：图片点与描述点共享 (source_file, chunk_index)，保留分数高的
+        seen = set()
+        deduped = []
+        for r in candidates:
+            key = (r.get("source_file"), r.get("chunk_index"))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(r)
+
+        # 多样性约束：图片最多占结果的 max_images 个，其余位置留给文本块。
+        # 否则同一主题的 PPT/宣传图会挤满 top-k，用户拿到一堆图却没有正文。
+        picked, n_img = [], 0
+        for r in deduped:
+            is_img = (r.get("metadata") or {}).get("asset_type") == "image"
+            if is_img and n_img >= self._max_images:
+                continue
+            picked.append(r)
+            n_img += is_img
+            if len(picked) >= top_k:
+                break
+        return picked
 
     def _search_once(
         self,

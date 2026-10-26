@@ -67,9 +67,9 @@ def pipeline_fingerprint(config: "PipelineConfig") -> str:
     比对查不出来。把它写进 payload，检测到不一致就按全量重建处理，避免新旧
     两种切法的 chunk 混在同一个 collection 里、检索质量静默下降。
 
-    embedding_model 先经 resolve_model_path 归一：模型名（"BAAI/bge-m3"）和
-    本地缓存绝对路径指向同一个模型，必须产生同一个指纹，否则换种写法就会
-    被误判为"模型换了"而全量重建。
+    embedding_model 先经 resolve_model_path 归一：模型名和本地缓存绝对路径
+    指向同一个模型，必须产生同一个指纹，否则换种写法会被误判为"模型换了"
+    而全量重建。
     """
     parts = [
         "parser", PARSER_VERSION,
@@ -78,8 +78,8 @@ def pipeline_fingerprint(config: "PipelineConfig") -> str:
         str(config.chunk_context_header), str(config.qa_augment),
         str(config.extract_assets),
         "embed", resolve_model_path(str(config.embedding_model)),
-        str(config.embedding_use_flag),
-        str(config.embedding_use_ollama),
+        # 兼容旧指纹：已移除的 BGE/Ollama 开关历史上恒为 False
+        "False", "False",
         str(config.embedding_use_qwen3_vl),
     ]
     return hashlib.md5("|".join(parts).encode()).hexdigest()[:16]
@@ -100,8 +100,8 @@ class PipelineConfig:
     chunk_overlap: int = 100
     min_chunk_size: int = 200
     # 每个 chunk 文本前置【文件名｜章节】上下文头：
-    # 口语化查询（"导购怎么推荐车"）与正文字面重合少，上下文头给 dense/sparse
-    # 两个通道都补上文档级关键词，同时让单条结果可溯源、脱离上下文也可读
+    # 口语化查询与正文字面重合少，上下文头补上文档级关键词，
+    # 同时让单条结果可溯源、脱离上下文也可读
     chunk_context_header: bool = True
     # QA 对增强：入库时为每个 chunk 生成若干口语化假设问题，与原文拼接后
     # 一起向量化（payload 里仍存原文）。口语查询直接命中假设问题。
@@ -119,10 +119,7 @@ class PipelineConfig:
     embedding_batch_size: int = 32
     embedding_normalize: bool = True
     embedding_device: Optional[str] = None  # None = auto
-    embedding_use_flag: bool = False        # 使用 FlagEmbedding 后端（BGE-M3）
-    embedding_use_ollama: bool = False      # 使用本机 Ollama 后端（dense-only）
-    embedding_use_qwen3_vl: bool = True     # 使用 Qwen3-VL 多模态嵌入（dense-only）
-    ollama_url: str = "http://localhost:11434"
+    embedding_use_qwen3_vl: bool = True     # 使用 Qwen3-VL 多模态嵌入（唯一后端）
 
     # ── Qdrant ──
     qdrant_url: str = "http://localhost:6333"
@@ -714,7 +711,7 @@ class VectorizePipeline:
         """入库前校验已有 collection 的稠密维度。
 
         不做校验的话，维度不符要等到 upsert 才抛 Qdrant 的晦涩报错。
-        典型翻车场景：用默认 bge-small(384) 入库，再用 rag_search 的 bge-m3(1024) 检索。
+        典型翻车场景：入库与检索使用了不同的嵌入模型/维度。
         """
         params = getattr(getattr(info, "config", None), "params", None)
         vectors = getattr(params, "vectors", None) if params else None
@@ -787,10 +784,7 @@ class VectorizePipeline:
                 batch_size=self.config.embedding_batch_size,
                 normalize=self.config.embedding_normalize,
                 device=self.config.embedding_device,
-                use_flag_embedding=self.config.embedding_use_flag,
-                use_ollama=self.config.embedding_use_ollama,
                 use_qwen3_vl=self.config.embedding_use_qwen3_vl,
-                ollama_url=self.config.ollama_url,
             )
         return self._embedder
 
