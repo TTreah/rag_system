@@ -111,8 +111,11 @@ class DocumentParser:
         ".webp": ("_parse_image", "Image"),
     }
 
-    def __init__(self):
-        pass
+    def __init__(self, use_mineru: bool = False,
+                 mineru_url: str = "http://localhost:8000/file_parse"):
+        """use_mineru=True 时，PDF 走 MinerU（逐页混合 OCR + Markdown 重建）。"""
+        self.use_mineru = use_mineru
+        self.mineru_url = mineru_url
 
     # ── 公共 API ──────────────────────────────────────────
 
@@ -140,6 +143,7 @@ class DocumentParser:
         if not text:
             return text
         text = re.sub(r"[\ud800-\udfff]", "", text)
+        text = text.replace("\ufffd", "")   # OCR 无法识别的替换符，直接剔除
         text = unicodedata.normalize("NFKC", text)
         return text.translate(DocumentParser._RADICAL_MAP)
 
@@ -161,6 +165,21 @@ class DocumentParser:
                 f"Unsupported file type: '{ext}'. "
                 f"Supported: {sorted(self.HANDLERS.keys())}"
             )
+
+        if ext == ".pdf" and self.use_mineru:
+            try:
+                from core.mineru_parser import parse_pdf
+                doc = parse_pdf(file_path, self.mineru_url)
+                doc.file_path = file_path
+                doc.file_type = ext
+                doc.metadata.setdefault("description", "PDF (MinerU)")
+                doc.content = self._sanitize(doc.content)
+                return doc
+            except Exception as e:
+                # MinerU 不可用不应阻断入库：回退到原生文本解析
+                import logging
+                logging.getLogger(__name__).warning(
+                    "MinerU 解析失败，回退原生解析: %s (%s)", file_path, e)
 
         method_name, description = self.HANDLERS[ext]
         parser = getattr(self, method_name)

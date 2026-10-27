@@ -76,7 +76,7 @@ def pipeline_fingerprint(config: "PipelineConfig") -> str:
         "chunk", str(config.chunk_strategy), str(config.chunk_size),
         str(config.chunk_overlap), str(config.min_chunk_size),
         str(config.chunk_context_header), str(config.qa_augment),
-        str(config.extract_assets),
+        str(config.extract_assets), str(getattr(config, "use_mineru", False)),
         "embed", resolve_model_path(str(config.embedding_model)),
         # 兼容旧指纹：已移除的 BGE/Ollama 开关历史上恒为 False
         "False", "False",
@@ -113,6 +113,11 @@ class PipelineConfig:
     # 把文档里的图片、表格另存为 <文档目录>/kb-assets/<文档名>/ 下的文件，
     # 生成描述文字入库并关联文件路径；检索命中描述时返回资产路径
     extract_assets: bool = True
+
+    # PDF 默认走 MinerU（逐页文本层/OCR 自动切换，输出 Markdown）；
+    # MinerU 不可用时自动回退到 pymupdf 原生解析
+    use_mineru: bool = True
+    mineru_url: str = "http://localhost:8000/file_parse"
 
     # ── 嵌入 ──
     embedding_model: str = "Qwen/Qwen3-VL-Embedding-2B"
@@ -376,16 +381,25 @@ class VectorizePipeline:
                 doc_meta.update(file_meta.get(doc.file_path, {}))
 
             if doc.sections:
-                chunks = self._chunker.split_from_sections(doc.sections, doc_meta)
+                chunks = self._ensure_chunker().split_from_sections(doc.sections, doc_meta)
+            elif doc.metadata.get("parser") == "mineru":
+                chunks = self._ensure_chunker("markdown").split(doc.content, doc_meta)
             else:
-                chunks = self._chunker.split(doc.content, doc_meta)
+                chunks = self._ensure_chunker().split(doc.content, doc_meta)
+
+            # 统一重编号：合并碎块后 index 可能有空洞，资产块从 len(chunks)
+            # 起编号会与旧 index 碰撞（点 ID 由 文件+index 派生，会互相覆盖）
+            for idx, c in enumerate(chunks):
+                c.chunk_index = idx
 
             for c in chunks:
                 # 上下文头：让 chunk 脱离原文也能被独立理解和命中。
                 # 注意此后 c.text 不再是原文的纯切片，char_start/char_end
                 # 仍指向原文位置（不含头部），仅用于溯源展示
                 if self.config.chunk_context_header:
-                    sec_label = c.metadata.get("section_label", "") or "正文"
+                    sec_label = (c.metadata.get("section_label")
+                                 or c.metadata.get("heading")
+                                 or "正文")
                     header = f"【{doc_meta['file_name']}｜{sec_label}】\n"
                     c.text = header + c.text
                 # 确保 chunk 有唯一 ID
@@ -463,8 +477,13 @@ class VectorizePipeline:
                                       asset.get("context", ""),
                                       str(asset["data"]))
 
-            text = (f"【{title}｜{asset.get('label', '')}】\n"
-                    f"[{'图片' if asset['kind'] == 'image' else '表格'}] {desc}")
+            if asset["kind"] == "table":
+                # 表格必须嵌入完整内容，不仅是摘要——否则表内数字/明细检索不到
+                table_body = str(asset["data"])[:6000]
+                text = (f"【{title}｜{asset.get('label', '')}】\n"
+                        f"[表格] {desc}\n{table_body}")
+            else:
+                text = (f"【{title}｜{asset.get('label', '')}】\n[图片] {desc}")
             chunks.append(Chunk(
                 text=text,
                 metadata={**doc_meta,
@@ -764,10 +783,20 @@ class VectorizePipeline:
 
     def _ensure_parser(self) -> DocumentParser:
         if self._parser is None:
-            self._parser = DocumentParser()
+            self._parser = DocumentParser(
+                use_mineru=self.config.use_mineru,
+                mineru_url=self.config.mineru_url,
+            )
         return self._parser
 
-    def _ensure_chunker(self) -> TextChunker:
+    def _ensure_chunker(self, strategy: Optional[str] = None) -> TextChunker:
+        if strategy and strategy != self.config.chunk_strategy:
+            return TextChunker(
+                strategy=strategy,
+                chunk_size=self.config.chunk_size,
+                overlap=self.config.chunk_overlap,
+                min_chunk_size=self.config.min_chunk_size,
+            )
         if self._chunker is None:
             self._chunker = TextChunker(
                 strategy=self.config.chunk_strategy,

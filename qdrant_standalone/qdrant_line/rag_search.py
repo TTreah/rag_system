@@ -36,7 +36,7 @@ QDRANT_URL = "http://localhost:6333"
 COLLECTION_NAME = "news_collection"
 # 模型名即可：TextEmbedder 会自动解析到 ModelScope / HuggingFace 本地缓存
 MODEL_NAME = "Qwen/Qwen3-VL-Embedding-2B"
-TOP_K = 5
+TOP_K = 3
 
 # ============================================================
 
@@ -62,6 +62,7 @@ class RAGSearcher:
         use_rerank: bool = True,
         rerank_threshold: float = RERANK_THRESHOLD,
         max_images: int = 2,
+        pool_size: int = 10,
     ):
         self._qdrant_url = qdrant_url
         self._collection = collection
@@ -69,6 +70,7 @@ class RAGSearcher:
         self._use_rerank = use_rerank
         self._rerank_threshold = rerank_threshold
         self._max_images = max_images
+        self._pool_size = pool_size
         self._embedder = None
         self._reranker = None
         self._client = None
@@ -104,18 +106,14 @@ class RAGSearcher:
             if rewritten != query:
                 queries.append(rewritten)
 
-        # 逐路检索（多路时每路取 top_k*2，给二次融合留足候选，
-        # 否则一路第 5 名的正确点会被交错挤出最终 top-k），
-        # 两路结果再做一次 RRF 融合（按排名而非分数合并）。
-        # 单路时保持 Qdrant 原始分数，不做二次融合。
-        per_query_k = top_k * 2 if len(queries) > 1 else top_k
-        if self._use_rerank:
-            per_query_k = max(per_query_k, 12)  # 给重排留足候选池
+        # 1) 混合检索：每路取 pool_size（默认 10）个候选
         ranked_lists = [
-            self._search_once(q, top_k=per_query_k,
+            self._search_once(q, top_k=self._pool_size,
                               score_threshold=score_threshold)
             for q in queries
         ]
+
+        # 2) 多路查询 RRF 融合（按点 ID）
         if len(ranked_lists) == 1:
             candidates = ranked_lists[0]
         else:
@@ -130,13 +128,7 @@ class RAGSearcher:
             candidates = sorted(fused.values(), key=lambda r: r["score"],
                                 reverse=True)
 
-        # 重排 + 相关性闸门：reranker 的分是真实相关度（0~1），
-        # 低于阈值的结果全部丢弃——无关查询在这里被整单拒答。
-        # 双路查询时每个候选分别用原查询和改写查询打分取 max：
-        # 改写后的书面查询更贴近文档措辞，口语化弱命中不会被误杀。
-        # 重排输入包含 chunk 的假设问题（qa_augment 产物）：
-        # 问题由 chunk 生成，命中问题即命中答案；无关查询的得分
-        # 不会被抬高（假设问题全部在自行车域内）
+        # 3) rerank + 相关性闸门（多路查询取 max）
         if self._use_rerank and candidates:
             reranker = self._get_reranker()
             texts = []
@@ -148,15 +140,15 @@ class RAGSearcher:
                 texts.append(t)
             best = [0.0] * len(candidates)
             for q in queries:
-                for i, s in enumerate(reranker.score(q, texts)):
-                    best[i] = max(best[i], s)
-            for r, s in zip(candidates, best):
-                r["rerank_score"] = s
+                for i, sc in enumerate(reranker.score(q, texts)):
+                    best[i] = max(best[i], sc)
+            for r, sc in zip(candidates, best):
+                r["rerank_score"] = sc
             candidates = [r for r in candidates
                           if r["rerank_score"] >= self._rerank_threshold]
             candidates.sort(key=lambda r: r["rerank_score"], reverse=True)
 
-        # 去重：图片点与描述点共享 (source_file, chunk_index)，保留分数高的
+        # 4) 去重：图片点与描述点共享 (source_file, chunk_index)
         seen = set()
         deduped = []
         for r in candidates:
@@ -166,12 +158,12 @@ class RAGSearcher:
             seen.add(key)
             deduped.append(r)
 
-        # 多样性约束：图片最多占结果的 max_images 个，其余位置留给文本块。
-        # 否则同一主题的 PPT/宣传图会挤满 top-k，用户拿到一堆图却没有正文。
+        # 5) 多样性约束后取 top_k（默认 3）
+        max_img = 1 if top_k <= 2 else self._max_images
         picked, n_img = [], 0
         for r in deduped:
             is_img = (r.get("metadata") or {}).get("asset_type") == "image"
-            if is_img and n_img >= self._max_images:
+            if is_img and n_img >= max_img:
                 continue
             picked.append(r)
             n_img += is_img
@@ -194,7 +186,7 @@ class RAGSearcher:
 
         # 2. 混合检索（dense + sparse → RRF fusion）
         prefetch = [
-            Prefetch(query=dense.tolist(), using="dense", limit=top_k * 2),
+            Prefetch(query=dense.tolist(), using="dense", limit=top_k),
         ]
         if sparse_map:
             prefetch.append(
@@ -204,7 +196,7 @@ class RAGSearcher:
                         values=list(sparse_map.values()),
                     ),
                     using="sparse",
-                    limit=top_k * 2,
+                    limit=top_k,
                 ),
             )
 
