@@ -22,6 +22,7 @@ def load_cases(docx_path: str) -> List[Dict[str, str]]:
     table = doc.tables[0]
     header = [c.text.strip() for c in table.rows[0].cells]
     ev_idx = next((i for i, h in enumerate(header) if "依据块" in h), None)
+    path_idx = next((i for i, h in enumerate(header) if "文件路径" in h), None)
     cases = []
     for row in table.rows[1:]:  # 跳过表头
         cells = [c.text.strip() for c in row.cells]
@@ -33,6 +34,7 @@ def load_cases(docx_path: str) -> List[Dict[str, str]]:
             "expect_file": cells[2],
             "expect_points": cells[3],
             "evidence": cells[ev_idx] if ev_idx is not None and ev_idx < len(cells) else "",
+            "expect_path": cells[path_idx] if path_idx is not None and path_idx < len(cells) else "",
         })
     return cases
 

@@ -32,6 +32,7 @@ from qdrant_line.rag_search import RAGSearcher
 from eval.eval_case_utils import (
     load_cases, point_coverage, file_stem, write_report,
 )
+from qdrant_line.vectorize_pipeline import canonical_path
 
 CASES_DOCX = "/Users/trinxai/Documents/pythonfile/测试用例/Qdrant检索测试用例.docx"
 REPORT_DOCX = "/Users/trinxai/Documents/pythonfile/测试用例/Qdrant检索测试结果.docx"
@@ -47,6 +48,10 @@ def main():
                     help="检索前先做口语→书面语查询改写（HyDE 同义扩展）")
     ap.add_argument("--no-rerank", action="store_true",
                     help="关闭 reranker 重排与相关性闸门（对照用）")
+    ap.add_argument("--rerank-threshold", type=float, default=None,
+                    help="覆盖相关性闸门阈值（默认用 reranker.RERANK_THRESHOLD）")
+    ap.add_argument("--ignore-evidence", action="store_true",
+                    help="忽略用例中的依据块号，仅按期望文件判定（重建前后对比用）")
     ap.add_argument("--cases", default=CASES_DOCX)
     ap.add_argument("--out", default=None,
                     help="报告输出路径（默认：用例同目录的 <collection>检索测试结果.docx）")
@@ -61,8 +66,11 @@ def main():
     print(f"加载 {len(cases)} 条用例，开始检索评测 (collection={args.collection}, "
           f"top_k={args.top_k}, rewrite={args.rewrite}) ...")
 
-    searcher = RAGSearcher(collection=args.collection,
-                           use_rerank=not args.no_rerank)
+    search_kwargs = {"collection": args.collection,
+                     "use_rerank": not args.no_rerank}
+    if args.rerank_threshold is not None:
+        search_kwargs["rerank_threshold"] = args.rerank_threshold
+    searcher = RAGSearcher(**search_kwargs)
     rows = []
     hits = {1: 0, 3: 0}
     rr_sum = 0.0
@@ -104,7 +112,7 @@ def main():
         expect_stem = file_stem(case["expect_file"])
         # 依据块（1-5 个）：格式 "文件名#块号；文件名#块号"
         ev_pairs = set()
-        for part in (case.get("evidence") or "").split("；"):
+        for part in ([] if args.ignore_evidence else (case.get("evidence") or "").split("；")):
             part = part.strip()
             if "#" in part:
                 name, idx = part.rsplit("#", 1)
@@ -113,12 +121,15 @@ def main():
                 except ValueError:
                     pass
 
+        expect_path = case.get("expect_path") or ""
         rank = None
         hit_texts = []
         for i, r in enumerate(results, 1):
             stem = file_stem(r.get("source_file", ""))
             if ev_pairs:
                 matched = (stem, r.get("chunk_index")) in ev_pairs
+            elif expect_path:
+                matched = canonical_path(r.get("source_file", "")) == canonical_path(expect_path)
             else:
                 matched = stem == expect_stem
             if matched:

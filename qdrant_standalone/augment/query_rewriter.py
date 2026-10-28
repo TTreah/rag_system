@@ -43,6 +43,37 @@ _PROMPT = (
 )
 
 _cache: dict = {}
+_CACHE_PATH = os.path.expanduser("~/.cache/rag_query_rewrites.json")
+_CACHE_VERSION = f"{LLM_MODEL}|v2"
+_cache_loaded = False
+
+
+def _load_persistent_cache():
+    global _cache_loaded
+    if _cache_loaded:
+        return
+    _cache_loaded = True
+    try:
+        with open(_CACHE_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("version") == _CACHE_VERSION:
+            _cache.update(data.get("items", {}))
+    except (OSError, ValueError):
+        pass
+
+
+def _save_persistent_cache():
+    if os.environ.get("RAG_REWRITE_CACHE", "1") == "0":
+        return
+    try:
+        os.makedirs(os.path.dirname(_CACHE_PATH), exist_ok=True)
+        tmp = _CACHE_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"version": _CACHE_VERSION, "items": _cache}, f,
+                      ensure_ascii=False, indent=1)
+        os.replace(tmp, _CACHE_PATH)
+    except OSError:
+        pass
 
 
 def _load_api_key() -> str:
@@ -63,6 +94,7 @@ def rewrite_query(query: str, enabled: bool = True) -> str:
     """改写查询；任何失败都返回原查询。"""
     if not enabled:
         return query
+    _load_persistent_cache()
     if query in _cache:
         return _cache[query]
 
@@ -94,6 +126,7 @@ def rewrite_query(query: str, enabled: bool = True) -> str:
         rewritten = query
 
     _cache[query] = rewritten
+    _save_persistent_cache()
     if rewritten != query:
         logger.info("查询改写: %s → %s", query, rewritten)
     return rewritten

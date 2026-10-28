@@ -31,22 +31,36 @@ def pid_for(source_file: str, chunk_index: int) -> str:
 
 
 def main():
+    global COLLECTION
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--collection", default=COLLECTION)
+    args = ap.parse_args()
+    COLLECTION = args.collection
+
     from qdrant_client import QdrantClient
     from qdrant_client.models import PointStruct
 
     client = QdrantClient(url="http://localhost:6333")
     points, offset = [], None
+    existing = set()
+    all_points = []
     while True:
         pts, offset = client.scroll(COLLECTION, limit=300, offset=offset,
                                     with_payload=True, with_vectors=False)
-        for p in pts:
-            md = p.payload.get("metadata") or {}
-            if md.get("asset_type") == "image" and md.get("asset_caption"):
-                if md.get("point_kind") == "image_caption":
-                    continue
-                points.append(p)
+        all_points.extend(pts)
         if offset is None:
             break
+    for p in all_points:
+        md = p.payload.get("metadata") or {}
+        if md.get("point_kind") == "image_caption":
+            existing.add((p.payload.get("source_file"), p.payload.get("chunk_index")))
+    for p in all_points:
+        md = p.payload.get("metadata") or {}
+        if md.get("asset_type") == "image" and md.get("asset_caption"):
+            if (p.payload.get("source_file"), p.payload.get("chunk_index")) in existing:
+                continue
+            points.append(p)
     logger.info("待补描述点的图片 %d 个", len(points))
 
     embedder = Qwen3VLEmbedderAdapter(resolve_model_path(EMB_MODEL))

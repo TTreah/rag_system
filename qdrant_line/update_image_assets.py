@@ -43,7 +43,8 @@ def collect_image_points(client):
                                     with_payload=True, with_vectors=False)
         for p in pts:
             md = p.payload.get("metadata") or {}
-            if md.get("asset_type") == "image" and md.get("asset_path"):
+            if (md.get("asset_type") == "image" and md.get("asset_path")
+                    and md.get("point_kind") != "image_caption"):
                 points.append({
                     "id": p.id,
                     "path": md["asset_path"],
@@ -97,7 +98,8 @@ def phase_embed(points, cache, batch_size=4):
     done = 0
     for start in range(0, len(points), batch_size):
         batch = points[start:start + batch_size]
-        valid = [p for p in batch if os.path.exists(p["path"])]
+        valid = [p for p in batch if os.path.exists(p["path"])
+                 and (p["metadata"].get("asset_vector") != "image")]
         if not valid:
             continue
         vecs = embedder.encode_images([p["path"] for p in valid])
@@ -126,13 +128,22 @@ def phase_embed(points, cache, batch_size=4):
 
 
 def main():
+    global COLLECTION
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=None, help="只处理前 N 张（试跑）")
+    ap.add_argument("--missing-only", action="store_true",
+                    help="只升级尚未使用图片向量的点（增量）")
+    ap.add_argument("--collection", default=COLLECTION)
     args = ap.parse_args()
+    COLLECTION = args.collection
 
     from qdrant_client import QdrantClient
     client = QdrantClient(url="http://localhost:6333")
     points = collect_image_points(client)
+    if args.missing_only:
+        before = len(points)
+        points = [p for p in points if p["metadata"].get("asset_vector") != "image"]
+        logger.info("增量模式：%d → %d 个待升级", before, len(points))
     logger.info("图片资产点 %d 个", len(points))
 
     cache = phase_caption(points, limit=args.limit)

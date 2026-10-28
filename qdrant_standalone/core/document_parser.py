@@ -170,6 +170,10 @@ class DocumentParser:
             try:
                 from core.mineru_parser import parse_pdf
                 doc = parse_pdf(file_path, self.mineru_url)
+                if not doc.content.strip():
+                    # MinerU 可能返回"非空 content_list 但正文全空"（如整页表格
+                    # 识别成空单元格）；此时回退原生解析，避免整份文档丢失
+                    raise RuntimeError("MinerU 正文为空")
                 doc.file_path = file_path
                 doc.file_type = ext
                 doc.metadata.setdefault("description", "PDF (MinerU)")

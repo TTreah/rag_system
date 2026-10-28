@@ -117,6 +117,40 @@ def html_table_to_markdown(table_html: str) -> str:
     return "\n".join(out)
 
 
+def _native_page_texts(pdf_path: str):
+    """pymupdf 文本层逐页文本（用于补齐 MinerU 漏抽的页面）。"""
+    import pymupdf
+    d = pymupdf.open(pdf_path)
+    try:
+        return [d[i].get_text("text").strip() for i in range(d.page_count)]
+    finally:
+        d.close()
+
+
+def _merge_missing_pages(content_list, native_pages):
+    """把 MinerU 明显漏抽的页面用原生文本补回（按页序插入）。"""
+    if not native_pages:
+        return content_list
+    per_page = {}
+    for item in content_list:
+        pg = int(item.get("page_idx", 0))
+        txt = item.get("text") or ""
+        if item.get("type") == "table":
+            txt = item.get("table_body") or ""
+        per_page[pg] = per_page.get(pg, 0) + len(txt or "")
+    extra = []
+    for i, native in enumerate(native_pages):
+        if len(native) < 30:
+            continue
+        if per_page.get(i, 0) < max(30, len(native) * 0.3):
+            extra.append({"type": "text", "text": native, "page_idx": i})
+    if not extra:
+        return content_list
+    merged = list(content_list) + extra
+    merged.sort(key=lambda x: int(x.get("page_idx", 0)))  # 稳定排序，保持页内顺序
+    return merged
+
+
 # ═══════════════════════════════════════════════════════════════
 # 正文重建（过滤页眉页脚、表格转资产）
 # ═══════════════════════════════════════════════════════════════
@@ -224,7 +258,9 @@ def parse_pdf(pdf_path: str, api_url: str = DEFAULT_MINERU_URL):
     content_list = None
     if os.path.exists(cache_file):
         try:
-            content_list = json.load(open(cache_file, encoding="utf-8"))
+            cached = json.load(open(cache_file, encoding="utf-8"))
+            # 空结果不视为有效缓存（可能是共享盘卡顿时的失败产物）
+            content_list = cached if cached else None
         except Exception:
             content_list = None
     if content_list is None:
@@ -232,9 +268,14 @@ def parse_pdf(pdf_path: str, api_url: str = DEFAULT_MINERU_URL):
         content_list = result.get("content_list") or []
         if isinstance(content_list, str):
             content_list = json.loads(content_list)
+        if not content_list:
+            raise RuntimeError("MinerU 返回空内容")
         os.makedirs(_CACHE_DIR, exist_ok=True)
         json.dump(content_list, open(cache_file, "w", encoding="utf-8"),
                   ensure_ascii=False)
+    # MinerU 可能整页漏抽（例如把文本页识别成空表格）：
+    # 用 pymupdf 文本层逐页补齐，再重建 Markdown
+    content_list = _merge_missing_pages(content_list, _native_page_texts(pdf_path))
     md, tables = rebuild_markdown(content_list)
 
     # 1) Unicode 归一化（NFKC + 部首映射 + 代理字符清理）

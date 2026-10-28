@@ -324,6 +324,7 @@ class TextChunker:
         chunks = []
         chunk_idx = 0
         current_offset = 0
+        heading_stack = {}
 
         for section in sections:
             section = section.strip()
@@ -336,8 +337,13 @@ class TextChunker:
             if title_match:
                 level = len(title_match.group(1))
                 title = title_match.group(2)
+                heading_stack[level] = title
+                for deeper in [k for k in heading_stack if k > level]:
+                    heading_stack.pop(deeper, None)
                 sec_meta["heading_level"] = level
                 sec_meta["heading"] = title
+                sec_meta["heading_path"] = " > ".join(
+                    heading_stack[k] for k in sorted(heading_stack))
 
             if len(section) <= self._body_size:
                 chunks.append(Chunk(

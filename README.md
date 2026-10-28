@@ -14,8 +14,6 @@ rag_system/
 └── tests/          回归测试
 ```
 
-前置服务：Qdrant `:6333`、MinerU `:8000`（PDF 解析；不可用时自动回退 pymupdf）。
-
 入口脚本均可直接运行，如：`python qdrant_line/run_sync.py`、`python kg_line/run_kg_sync.py`、
 `python eval/eval_qdrant_cases.py`、`python -m pytest tests/`（或逐个 `python tests/test_xxx.py`）。
 
@@ -23,8 +21,7 @@ rag_system/
 
 | 文件 | 功能 |
 |---|---|
-| document_parser.py | 多格式文档解析（PDF/DOCX/PPT/TXT），`.doc` 经 textutil/LibreOffice 转换；PDF 默认走 MinerU（失败自动回退） |
-| mineru_parser.py | PDF→Markdown：逐页文本层/OCR 自动切换、表格转 MD、图片提取、页眉页脚过滤、Unicode 归一化 |
+| document_parser.py | 多格式文档解析（PDF/DOCX/PPT/TXT），`.doc` 老格式经 textutil/LibreOffice 自动转换，输出统一 ParsedDocument |
 | text_chunker.py | 多策略文本分块（fixed/recursive/sentence/markdown/section），含小碎块合并与尾部 overlap 预告 |
 | embedder.py | Qwen3-VL-Embedding-2B 多模态嵌入（文本+图片，2048维），无模型时降级为哈希嵌入 |
 | reranker.py | Qwen3-VL-Reranker-2B 重排（yes/no logit 打分），含相关性闸门阈值 0.50 |
@@ -33,7 +30,7 @@ rag_system/
 
 | 文件 | 功能 |
 |---|---|
-| vectorize_pipeline.py | 向量化主流水线：解析→分块（MinerU 文档按 Markdown 标题分块）→上下文头/QA增强→嵌入→入库；资产落盘 kb-assets/ |
+| vectorize_pipeline.py | 向量化主流水线：解析→分块（上下文头/QA增强）→嵌入→入库 Qdrant；图片/表格资产落盘 kb-assets/ 并生成描述入库关联 |
 | sync_index.py | 扫盘与差异比对纯函数工具库（同步编排与文件清单已下线，由外部扫描+DB脚本接管） |
 | run_news.py | Qdrant 线批量入库/检索 CLI 入口 |
 | kb_add.py | 单文档运维：新增入库（已入库自动跳过，查主库 payload 判断） |

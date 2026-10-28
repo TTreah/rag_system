@@ -40,7 +40,8 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════
 
 # 解析逻辑变更时手动 +1，使 pipeline_fingerprint 变化、触发全量重建
-PARSER_VERSION = "2"  # v2: 解析层加 Unicode 归一化
+PARSER_VERSION = "2"   # v2: 解析层加 Unicode 归一化
+CHUNKER_VERSION = "2"  # v2: 标题路径 + 表格按行拆分
 
 
 def canonical_path(p) -> str:
@@ -73,10 +74,12 @@ def pipeline_fingerprint(config: "PipelineConfig") -> str:
     """
     parts = [
         "parser", PARSER_VERSION,
+        "chunker", CHUNKER_VERSION,
         "chunk", str(config.chunk_strategy), str(config.chunk_size),
         str(config.chunk_overlap), str(config.min_chunk_size),
         str(config.chunk_context_header), str(config.qa_augment),
-        str(config.extract_assets), str(getattr(config, "use_mineru", False)),
+        str(config.extract_assets), str(config.table_chunk_max),
+        str(getattr(config, "use_mineru", False)),
         "embed", resolve_model_path(str(config.embedding_model)),
         # 兼容旧指纹：已移除的 BGE/Ollama 开关历史上恒为 False
         "False", "False",
@@ -113,6 +116,9 @@ class PipelineConfig:
     # 把文档里的图片、表格另存为 <文档目录>/kb-assets/<文档名>/ 下的文件，
     # 生成描述文字入库并关联文件路径；检索命中描述时返回资产路径
     extract_assets: bool = True
+    # 表格单块上限：实测 1500 拆行会损失行间关联，6000 整表效果更好；
+    # 仅超过 6000 字才按行拆（原实现是直接截断）
+    table_chunk_max: int = 6000
 
     # PDF 默认走 MinerU（逐页文本层/OCR 自动切换，输出 Markdown）；
     # MinerU 不可用时自动回退到 pymupdf 原生解析
@@ -398,6 +404,7 @@ class VectorizePipeline:
                 # 仍指向原文位置（不含头部），仅用于溯源展示
                 if self.config.chunk_context_header:
                     sec_label = (c.metadata.get("section_label")
+                                 or c.metadata.get("heading_path")
                                  or c.metadata.get("heading")
                                  or "正文")
                     header = f"【{doc_meta['file_name']}｜{sec_label}】\n"
@@ -425,6 +432,25 @@ class VectorizePipeline:
 
     # 资产落盘的目录名（在文档所在目录下创建）
     ASSET_DIR_NAME = "kb-assets"
+
+    @staticmethod
+    def _split_table_md(md: str, max_chars: int) -> List[str]:
+        """长表格按行拆块，每块重复表头（前两行：表头 + 分隔线）。"""
+        lines = md.strip().splitlines()
+        if len(md) <= max_chars or len(lines) < 3:
+            return [md]
+        header, rows = lines[:2], lines[2:]
+        parts, cur = [], list(header)
+        cur_len = sum(len(x) + 1 for x in cur)
+        for row in rows:
+            if cur_len + len(row) + 1 > max_chars and len(cur) > 2:
+                parts.append("\n".join(cur))
+                cur, cur_len = list(header), sum(len(x) + 1 for x in header)
+            cur.append(row)
+            cur_len += len(row) + 1
+        if len(cur) > 2:
+            parts.append("\n".join(cur))
+        return parts or [md]
 
     def _build_asset_chunks(
         self,
@@ -477,22 +503,27 @@ class VectorizePipeline:
                                       asset.get("context", ""),
                                       str(asset["data"]))
 
+            label = asset.get("label", "")
             if asset["kind"] == "table":
-                # 表格必须嵌入完整内容，不仅是摘要——否则表内数字/明细检索不到
-                table_body = str(asset["data"])[:6000]
-                text = (f"【{title}｜{asset.get('label', '')}】\n"
-                        f"[表格] {desc}\n{table_body}")
+                parts = self._split_table_md(str(asset["data"]),
+                                             self.config.table_chunk_max)
+                texts = []
+                for pi, part in enumerate(parts):
+                    lbl = label if len(parts) == 1 else f"{label}（{pi+1}/{len(parts)}）"
+                    texts.append((lbl, f"【{title}｜{lbl}】\n[表格] {desc}\n{part}"))
             else:
-                text = (f"【{title}｜{asset.get('label', '')}】\n[图片] {desc}")
-            chunks.append(Chunk(
-                text=text,
-                metadata={**doc_meta,
-                          "chunk_method": "asset_desc",
-                          "asset_type": asset["kind"],
-                          "asset_path": fpath,
-                          "section_label": asset.get("label", "")},
-                chunk_index=start_index + i,
-            ))
+                texts = [(label, f"【{title}｜{label}】\n[图片] {desc}")]
+
+            for lbl, text in texts:
+                chunks.append(Chunk(
+                    text=text,
+                    metadata={**doc_meta,
+                              "chunk_method": "asset_desc",
+                              "asset_type": asset["kind"],
+                              "asset_path": fpath,
+                              "section_label": lbl},
+                    chunk_index=start_index + len(chunks),
+                ))
         if chunks:
             logger.info("  资产: %s → %d 个（%s）", title, len(chunks), out_dir)
         return chunks

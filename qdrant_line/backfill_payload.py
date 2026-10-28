@@ -29,6 +29,13 @@ def file_hash(path):
 
 
 def main():
+    global COLLECTION
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--collection", default=COLLECTION)
+    args = ap.parse_args()
+    COLLECTION = args.collection
+
     from qdrant_client import QdrantClient
     from qdrant_line.vectorize_pipeline import PipelineConfig, pipeline_fingerprint
 
