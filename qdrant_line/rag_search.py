@@ -32,10 +32,11 @@ from core.reranker import Reranker, RERANK_THRESHOLD
 # ============================================================
 #  连接配置（按需修改）
 # ============================================================
-QDRANT_URL = "http://localhost:6333"
-COLLECTION_NAME = "news_collection"
+from config import QDRANT_URL, COLLECTION as _CFG_COLLECTION, EMBEDDING_MODEL as _CFG_EMBED
+
+COLLECTION_NAME = _CFG_COLLECTION
 # 模型名即可：TextEmbedder 会自动解析到 ModelScope / HuggingFace 本地缓存
-MODEL_NAME = "Qwen/Qwen3-VL-Embedding-2B"
+MODEL_NAME = _CFG_EMBED
 TOP_K = 3
 
 # ============================================================

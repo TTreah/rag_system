@@ -13,7 +13,9 @@ import core  # noqa: F401
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger(__name__)
 
-COLLECTION = "CEO-files"
+from config import QDRANT_URL, COLLECTION as _CFG_COLLECTION
+
+COLLECTION = _CFG_COLLECTION
 _HASH_CHUNK = 1024 * 1024
 
 
@@ -40,7 +42,7 @@ def main():
     from qdrant_line.vectorize_pipeline import PipelineConfig, pipeline_fingerprint
 
     fp = pipeline_fingerprint(PipelineConfig(qa_augment=True))
-    client = QdrantClient(url="http://localhost:6333")
+    client = QdrantClient(url=QDRANT_URL)
 
     by_file = defaultdict(list)
     offset = None

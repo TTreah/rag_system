@@ -25,6 +25,8 @@ lightrag_query.py — LightRAG 知识图谱查询工具
 
 import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import json
 import urllib.request
 import urllib.error
@@ -40,7 +42,7 @@ if sys.stdout and getattr(sys.stdout, "encoding", "").lower() != "utf-8":
 # ============================================================
 #  连接配置（按需修改）
 # ============================================================
-LIGHTRAG_URL = "http://localhost:9621"
+from config import LIGHTRAG_URL
 QUERY_ENDPOINT = f"{LIGHTRAG_URL}/query"
 QUERY_DATA_ENDPOINT = f"{LIGHTRAG_URL}/query/data"
 

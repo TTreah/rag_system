@@ -27,6 +27,8 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
 import numpy as np
 
+import config
+
 from core.document_parser import DocumentParser, ParsedDocument
 from core.text_chunker import TextChunker, Chunk
 from core.embedder import TextEmbedder, resolve_model_path
@@ -123,17 +125,17 @@ class PipelineConfig:
     # PDF 默认走 MinerU（逐页文本层/OCR 自动切换，输出 Markdown）；
     # MinerU 不可用时自动回退到 pymupdf 原生解析
     use_mineru: bool = True
-    mineru_url: str = "http://localhost:8000/file_parse"
+    mineru_url: str = config.MINERU_URL
 
     # ── 嵌入 ──
-    embedding_model: str = "Qwen/Qwen3-VL-Embedding-2B"
+    embedding_model: str = config.EMBEDDING_MODEL
     embedding_batch_size: int = 32
     embedding_normalize: bool = True
     embedding_device: Optional[str] = None  # None = auto
     embedding_use_qwen3_vl: bool = True     # 使用 Qwen3-VL 多模态嵌入（唯一后端）
 
     # ── Qdrant ──
-    qdrant_url: str = "http://localhost:6333"
+    qdrant_url: str = config.QDRANT_URL
     qdrant_collection: str = "documents"
     # 稠密维度始终由 embedder 实际输出决定（dense_vectors.shape[1]），无需配置
     qdrant_force_recreate: bool = False

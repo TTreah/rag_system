@@ -26,12 +26,13 @@ import urllib.error
 
 logger = logging.getLogger(__name__)
 
-LLM_HOST = "https://api.deepseek.com/v1"
-LLM_MODEL = "deepseek-flash"
+from config import (
+    DEEPSEEK_BASE_URL as LLM_HOST,
+    DEEPSEEK_MODEL as LLM_MODEL,
+    DEEPSEEK_API_KEY,
+    DEEPSEEK_ENV_FILE,
+)
 TIMEOUT = 60   # flash 推理模型较慢
-
-# LightRAG 部署的 .env（借它的 key，避免重复配置）
-LIGHTRAG_ENV = "/Users/trinxai/LightRAG/.env"
 
 _PROMPT = (
     "你是企业制度知识库的查询改写助手。把用户的口语化提问改写成企业制度文档"
@@ -77,16 +78,19 @@ def _save_persistent_cache():
 
 
 def _load_api_key() -> str:
-    key = os.environ.get("DEEPSEEK_API_KEY")
+    # config 已加载本目录 .env；真实环境变量优先
+    key = os.environ.get("DEEPSEEK_API_KEY") or DEEPSEEK_API_KEY
     if key:
         return key
-    try:
-        with open(LIGHTRAG_ENV, encoding="utf-8") as f:
-            for line in f:
-                if line.startswith(("LLM_BINDING_API_KEY=", "OPENAI_API_KEY=")):
-                    return line.split("=", 1)[1].strip()
-    except OSError:
-        pass
+    # 可选兜底：指向另一个含 LLM_BINDING_API_KEY/OPENAI_API_KEY 的 .env
+    if DEEPSEEK_ENV_FILE:
+        try:
+            with open(DEEPSEEK_ENV_FILE, encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith(("LLM_BINDING_API_KEY=", "OPENAI_API_KEY=")):
+                        return line.split("=", 1)[1].strip().strip('"').strip("'")
+        except OSError:
+            pass
     return ""
 
 

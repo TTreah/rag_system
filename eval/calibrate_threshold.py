@@ -5,11 +5,12 @@
 """
 import sys, os, json, random
 
-sys.path.insert(0, "/Users/trinxai/pyprofiles/rag_system")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from eval.eval_case_utils import load_cases, point_coverage, file_stem
 from qdrant_line.rag_search import RAGSearcher
 
-CASES = "/Users/trinxai/Documents/pythonfile/测试用例/CEO-files检索测试用例300条.docx"
+from config import TEST_CASE_DIR
+CASES = os.path.join(TEST_CASE_DIR, "CEO-files检索测试用例300条.docx")
 CACHE = "/tmp/calib60.json"
 THRESHOLDS = (0.4, 0.45, 0.5)
 

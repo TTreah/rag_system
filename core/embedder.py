@@ -17,9 +17,11 @@ from typing import Any, List, Union, Optional
 
 import numpy as np
 
+from config import EMBEDDING_MODEL as _CFG_EMBEDDING_MODEL
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "Qwen/Qwen3-VL-Embedding-2B"
+DEFAULT_MODEL = _CFG_EMBEDDING_MODEL
 
 
 def resolve_model_path(model_name: str) -> str:

@@ -16,7 +16,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger(__name__)
 
 COLLECTION = "CEO-files"
-DOCX = "/Users/trinxai/Documents/pythonfile/测试用例/CEO-files检索测试用例300条-精准版.docx"
+from config import TEST_CASE_DIR, QDRANT_URL
+DOCX = os.path.join(TEST_CASE_DIR, "CEO-files检索测试用例300条-精准版.docx")
 _lock = threading.Lock()
 
 
@@ -41,7 +42,7 @@ def parse_json(raw):
 
 def load_corpus():
     from qdrant_client import QdrantClient
-    c = QdrantClient(url="http://localhost:6333")
+    c = QdrantClient(url=QDRANT_URL)
     corpus, offset = {}, None
     while True:
         pts, offset = c.scroll(COLLECTION, limit=500, offset=offset,

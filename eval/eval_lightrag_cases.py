@@ -33,8 +33,9 @@ from eval.eval_case_utils import (
     load_cases, point_coverage, file_stem, write_report,
 )
 
-CASES_DOCX = "/Users/trinxai/Documents/pythonfile/测试用例/LightRAG图谱检索测试用例.docx"
-REPORT_DOCX = "/Users/trinxai/Documents/pythonfile/测试用例/LightRAG图谱检索测试结果.docx"
+from config import TEST_CASE_DIR
+CASES_DOCX = os.path.join(TEST_CASE_DIR, "LightRAG图谱检索测试用例.docx")
+REPORT_DOCX = os.path.join(TEST_CASE_DIR, "LightRAG图谱检索测试结果.docx")
 
 CROSS_DOC_MARKER = "跨文档"
 IRRELEVANT_MARKER = "（无关"

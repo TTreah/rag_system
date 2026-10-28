@@ -10,7 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from eval.eval_case_utils import write_report
 
-OUT = "/Users/trinxai/Documents/pythonfile/测试用例/检索优化对比报告.docx"
+from config import TEST_CASE_DIR
+OUT = os.path.join(TEST_CASE_DIR, "检索优化对比报告.docx")
 
 metrics = [
     # ── 最终状态（Qwen3-VL 栈，100 条用例）──

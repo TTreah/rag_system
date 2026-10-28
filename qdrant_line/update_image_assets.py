@@ -30,10 +30,11 @@ from core.embedder import Qwen3VLEmbedderAdapter, resolve_model_path
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger(__name__)
 
-COLLECTION = "CEO-files"
+from config import VLM_MODEL, EMBEDDING_MODEL as EMB_MODEL, QDRANT_URL, COLLECTION as _CFG_COLLECTION
+
+COLLECTION = _CFG_COLLECTION
 CAPTION_CACHE = "/tmp/image_captions.json"
-VLM_MODEL = "Qwen/Qwen3-VL-2B-Instruct"
-EMB_MODEL = "Qwen/Qwen3-VL-Embedding-2B"
+
 
 
 def collect_image_points(client):
@@ -92,7 +93,7 @@ def phase_embed(points, cache, batch_size=4):
     """阶段 2：图片本体向量化 + 原地更新"""
     from qdrant_client import QdrantClient
     from qdrant_client.models import PointStruct
-    client = QdrantClient(url="http://localhost:6333")
+    client = QdrantClient(url=QDRANT_URL)
     embedder = Qwen3VLEmbedderAdapter(resolve_model_path(EMB_MODEL))
 
     done = 0
@@ -138,7 +139,7 @@ def main():
     COLLECTION = args.collection
 
     from qdrant_client import QdrantClient
-    client = QdrantClient(url="http://localhost:6333")
+    client = QdrantClient(url=QDRANT_URL)
     points = collect_image_points(client)
     if args.missing_only:
         before = len(points)

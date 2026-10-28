@@ -34,8 +34,9 @@ from eval.eval_case_utils import (
 )
 from qdrant_line.vectorize_pipeline import canonical_path
 
-CASES_DOCX = "/Users/trinxai/Documents/pythonfile/测试用例/Qdrant检索测试用例.docx"
-REPORT_DOCX = "/Users/trinxai/Documents/pythonfile/测试用例/Qdrant检索测试结果.docx"
+from config import TEST_CASE_DIR
+CASES_DOCX = os.path.join(TEST_CASE_DIR, "Qdrant检索测试用例.docx")
+REPORT_DOCX = os.path.join(TEST_CASE_DIR, "Qdrant检索测试结果.docx")
 
 
 def main():

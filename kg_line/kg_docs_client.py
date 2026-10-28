@@ -25,7 +25,9 @@ import urllib.parse
 import urllib.request
 import urllib.error
 
-DEFAULT_LIGHTRAG_URL = "http://localhost:9621"
+from config import LIGHTRAG_URL as _CFG_LIGHTRAG_URL, LIGHTRAG_API_KEY as _CFG_LIGHTRAG_KEY
+
+DEFAULT_LIGHTRAG_URL = _CFG_LIGHTRAG_URL
 
 # 终态：processed 成功 / failed 失败；其余都是中间态
 TERMINAL_OK = "processed"
@@ -55,7 +57,7 @@ class LightRAGDocsClient:
     def __init__(self, base_url: str = DEFAULT_LIGHTRAG_URL,
                  api_key: str = None, timeout: int = 180):
         self.base_url = base_url.rstrip("/")
-        self.api_key = api_key or os.environ.get("LIGHTRAG_API_KEY")
+        self.api_key = api_key or os.environ.get("LIGHTRAG_API_KEY") or _CFG_LIGHTRAG_KEY
         self.timeout = timeout
 
     # ── 状态 ─────────────────────────────────────────────

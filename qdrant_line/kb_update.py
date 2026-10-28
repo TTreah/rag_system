@@ -19,6 +19,7 @@ import logging
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from config import COLLECTION as _CFG_COLLECTION
 from qdrant_line.vectorize_pipeline import (
     VectorizePipeline, PipelineConfig, canonical_path,
 )
@@ -34,7 +35,7 @@ def main(argv=None) -> int:
     ap.add_argument("--name", action="append", help="按文件名（basename 包含匹配）")
     ap.add_argument("--hash", dest="hashes", action="append",
                     help="按入库时记录的文件 sha256（前缀即可）")
-    ap.add_argument("--collection", default="news_collection")
+    ap.add_argument("--collection", default=_CFG_COLLECTION)
     ap.add_argument("--qa-augment", action="store_true")
     args = ap.parse_args(argv)
 

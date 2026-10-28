@@ -21,8 +21,10 @@ from core.embedder import Qwen3VLEmbedderAdapter, resolve_model_path
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger(__name__)
 
-COLLECTION = "CEO-files"
-EMB_MODEL = "Qwen/Qwen3-VL-Embedding-2B"
+from config import QDRANT_URL, EMBEDDING_MODEL as EMB_MODEL, COLLECTION as _CFG_COLLECTION
+
+COLLECTION = _CFG_COLLECTION
+
 
 
 def pid_for(source_file: str, chunk_index: int) -> str:
@@ -41,7 +43,7 @@ def main():
     from qdrant_client import QdrantClient
     from qdrant_client.models import PointStruct
 
-    client = QdrantClient(url="http://localhost:6333")
+    client = QdrantClient(url=QDRANT_URL)
     points, offset = [], None
     existing = set()
     all_points = []

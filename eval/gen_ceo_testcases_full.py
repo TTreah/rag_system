@@ -32,7 +32,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger(__name__)
 
 COLLECTION = "CEO-files"
-OUT = "/Users/trinxai/Documents/pythonfile/测试用例/CEO-files检索测试用例300条-精准版.docx"
+from config import TEST_CASE_DIR, QDRANT_URL
+OUT = os.path.join(TEST_CASE_DIR, "CEO-files检索测试用例300条-精准版.docx")
 N_PRECISE, N_FUZZY, N_IRREL = 100, 150, 50
 WORKERS = 8
 random.seed(2026)
@@ -80,7 +81,7 @@ def parse_json(raw: str) -> dict:
 def load_corpus() -> dict:
     """{file: {"chunks": [(idx, text)], "assets": [(idx, text)]}}"""
     from qdrant_client import QdrantClient
-    c = QdrantClient(url="http://localhost:6333")
+    c = QdrantClient(url=QDRANT_URL)
     corpus = {}
     offset = None
     while True:

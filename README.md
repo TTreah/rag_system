@@ -2,6 +2,31 @@
 
 企业知识库双检索系统：Qdrant 向量检索线 + LightRAG 知识图谱线。
 
+## 配置与密钥（.env）
+
+所有随环境变化、或不应写入代码的值（key、服务地址、模型名、源目录、collection）
+统一放在本目录的 `.env`，由 `config.py` 加载；真实环境变量优先于 `.env`。
+
+```bash
+cp .env.example .env
+# 编辑 .env，至少填写 DEEPSEEK_API_KEY
+chmod 600 .env
+```
+
+| 变量 | 说明 | 默认 |
+|---|---|---|
+| `DEEPSEEK_API_KEY` | DeepSeek 密钥（改写/QA/资产描述/LightRAG 抽取） | 空 |
+| `DEEPSEEK_BASE_URL` / `DEEPSEEK_MODEL` | DeepSeek 地址与模型 | api.deepseek.com / deepseek-flash |
+| `QDRANT_URL` / `MINERU_URL` | Qdrant / MinerU 地址 | localhost:6333 / localhost:8000 |
+| `LIGHTRAG_URL` / `LIGHTRAG_CEO_URL` | 图谱服务地址 | localhost:9621 / 9622 |
+| `LIGHTRAG_API_KEY` | 图谱服务鉴权（可选） | 空 |
+| `EMBEDDING_MODEL` / `RERANK_MODEL` / `VLM_MODEL` | 三个 Qwen 模型名 | Qwen3-VL-2B 系列 |
+| `SOURCE_DIR` / `COLLECTION` | 默认扫描目录与目标库 | — / news_collection |
+| `TEST_CASE_DIR` | 测试用例目录 | — |
+
+`.env` 已加入 `.gitignore`，不会提交；代码中不再包含密钥或本机绝对路径。
+
+
 ## 目录结构
 
 ```
@@ -11,6 +36,7 @@ rag_system/
 ├── kg_line/        LightRAG 知识图谱线（同步 + 查询）
 ├── augment/        查询增强（改写 / QA 假设问题）
 ├── eval/           用例评测（读 docx → 批量执行 → 生成报告）
+├── config.py       .env 配置加载（密钥/地址/模型/路径）
 └── tests/          回归测试
 ```
 
@@ -74,3 +100,18 @@ rag_system/
 | test_text_chunker.py | 分块器回归测试（边界与 offset 精度） |
 | test_kg_sync.py | 图谱同步回归测试（内存 FakeClient，无需真实服务） |
 | test_embedder_scenarios.py | 嵌入器离线/在线两种加载模式验证 |
+
+## 代码副本同步（qdrant_standalone）
+
+`qdrant_standalone/` 是 Qdrant 线的独立部署副本，已加入 `.gitignore`，属于生成物。
+`sync_standalone.py` 是配套的本地同步工具，同样不纳入版本库（换机器需从正本重新放置或手工复制共享文件）。
+修改正本中的共享代码后，运行：
+
+```bash
+python sync_standalone.py          # 同步共享代码到副本
+python sync_standalone.py --check  # 只检测漂移（CI/提交前用）
+python sync_standalone.py --dry-run
+```
+
+脚本只同步 `core/`、`augment/`、`qdrant_line/` 下的共享文件；
+副本独有的 `README.md`、`requirements.txt`、`config.py`、`.env` 不会被覆盖。

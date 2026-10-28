@@ -19,3 +19,12 @@ env/
 kg_manifest.json
 file_manifest.json
 *.lock
+
+# 本地环境配置（含密钥）
+.env
+.env.*
+!.env.example
+
+# 代码副本与同步脚本（生成物/本地工具，不纳入版本库）
+qdrant_standalone/
+sync_standalone.py

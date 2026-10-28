@@ -18,6 +18,7 @@ import logging
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from config import COLLECTION as _CFG_COLLECTION
 from qdrant_line.vectorize_pipeline import (
     VectorizePipeline, PipelineConfig, canonical_path,
 )
@@ -30,7 +31,7 @@ logger = logging.getLogger(__name__)
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="新增文档入库")
     ap.add_argument("paths", nargs="+", help="文件或目录")
-    ap.add_argument("--collection", default="news_collection")
+    ap.add_argument("--collection", default=_CFG_COLLECTION)
     ap.add_argument("--force", action="store_true",
                     help="已在库中也强制重入（改内容请用 kb_update.py）")
     ap.add_argument("--qa-augment", action="store_true",

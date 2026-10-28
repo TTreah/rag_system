@@ -11,9 +11,11 @@ import os
 import logging
 from typing import Optional
 
+from config import RERANK_MODEL as _CFG_RERANK_MODEL
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_RERANK_MODEL = "Qwen/Qwen3-VL-Reranker-2B"
+DEFAULT_RERANK_MODEL = _CFG_RERANK_MODEL
 
 # 相关性闸门阈值（Qwen3-VL 分数尺度，基于 CEO-files 300 条实测标定）：
 #   无关候选最高 ≈0.45，相关弱命中 ≥0.50；取 0.50。

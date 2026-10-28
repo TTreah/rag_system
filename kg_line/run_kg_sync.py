@@ -51,8 +51,7 @@ if sys.stdout and getattr(sys.stdout, "encoding", "").lower() != "utf-8":
 # ============================================================
 #  可调参数（按实际环境修改）
 # ============================================================
-SOURCE_DIR = "/Volumes/AI-Project/QLD-UAT/KnowledgeBase/KB-Product/document-rule"  # 共享盘/本地要同步的目录
-LIGHTRAG_URL = "http://localhost:9621"
+from config import SOURCE_DIR, LIGHTRAG_URL  # 共享盘目录与图谱服务地址来自 .env
 MANIFEST_PATH = None                          # None = 脚本旁的 kg_manifest.json
 
 # 安全阈值：待删文档超过清单总量的 30% 就中止，需 --force

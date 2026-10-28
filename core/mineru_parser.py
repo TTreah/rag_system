@@ -21,7 +21,9 @@ import urllib.error
 from html.parser import HTMLParser
 from typing import Dict, List, Tuple
 
-DEFAULT_MINERU_URL = "http://localhost:8000/file_parse"
+from config import MINERU_URL
+
+DEFAULT_MINERU_URL = MINERU_URL
 
 _SKIP_TYPES = {"header", "footer", "page_footnote", "page_number"}
 _MIN_IMAGE_BYTES = 10 * 1024

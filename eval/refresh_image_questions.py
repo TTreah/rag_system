@@ -15,7 +15,8 @@ from augment.query_rewriter import _load_api_key, LLM_HOST, LLM_MODEL
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 logger = logging.getLogger(__name__)
 
-DOCX = "/Users/trinxai/Documents/pythonfile/测试用例/CEO-files检索测试用例300条-精准版.docx"
+from config import TEST_CASE_DIR, QDRANT_URL
+DOCX = os.path.join(TEST_CASE_DIR, "CEO-files检索测试用例300条-精准版.docx")
 COLLECTION = "CEO-files"
 REPLACE_IDS = {"25", "26", "56", "57",
                "236", "237", "238", "240", "241", "243", "244", "245",
@@ -47,7 +48,7 @@ def main():
     from qdrant_client import QdrantClient
     from qdrant_line.rag_search import RAGSearcher
 
-    client = QdrantClient(url="http://localhost:6333")
+    client = QdrantClient(url=QDRANT_URL)
     caps = {}
     caps_by_name = {}
     offset = None

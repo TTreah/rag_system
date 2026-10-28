@@ -25,7 +25,8 @@ logger = logging.getLogger(__name__)
 
 ROOT = "/Volumes/Trinx-CEO/KnowledgeBase/KB-GeneralBusiness/千里达运动文档"
 ASSETS = os.path.join(ROOT, "kb-assets")
-OUT = "/Users/trinxai/Documents/pythonfile/测试用例/CEO-files检索测试用例300条.docx"
+from config import TEST_CASE_DIR
+OUT = os.path.join(TEST_CASE_DIR, "CEO-files检索测试用例300条.docx")
 SEED = 42
 
 N_FILES = 130         # 随机抽样的文件数

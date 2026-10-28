@@ -14,5 +14,10 @@ torchvision>=0.20        # qwen-vl-utils 依赖
 transformers>=4.57       # Qwen3-VL 需要
 qwen-vl-utils>=0.0.14
 
+# 运行时配置见 .env / config.py：
+#   DEEPSEEK_API_KEY、QDRANT_URL、MINERU_URL、LIGHTRAG_URL、
+#   EMBEDDING_MODEL / RERANK_MODEL / VLM_MODEL、SOURCE_DIR、COLLECTION
+#   真实环境变量优先于 .env
+
 # ── 可选：下载模型用（ModelScope 镜像，首次部署后不再需要）──
 # modelscope>=1.25

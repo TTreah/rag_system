@@ -111,8 +111,9 @@ class DocumentParser:
         ".webp": ("_parse_image", "Image"),
     }
 
-    def __init__(self, use_mineru: bool = False,
-                 mineru_url: str = "http://localhost:8000/file_parse"):
+    def __init__(self, use_mineru: bool = False, mineru_url: str = None):
+        from config import MINERU_URL
+        mineru_url = mineru_url or MINERU_URL
         """use_mineru=True 时，PDF 走 MinerU（逐页混合 OCR + Markdown 重建）。"""
         self.use_mineru = use_mineru
         self.mineru_url = mineru_url

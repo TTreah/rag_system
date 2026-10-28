@@ -29,8 +29,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.embedder import Qwen3VLEmbedderAdapter, resolve_model_path
 
-PORT = int(os.environ.get("QWEN3VL_EMBED_PORT", "18001"))
-MODEL_NAME = "Qwen/Qwen3-VL-Embedding-2B"
+from config import EMBEDDING_MODEL as MODEL_NAME, LIGHTRAG_EMBED_PORT
+
+PORT = LIGHTRAG_EMBED_PORT
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
